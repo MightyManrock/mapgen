@@ -1,3 +1,43 @@
-fn main() {
-    println!("mapgen: nothing implemented yet — see README.md for the planned pipeline.");
+mod climate;
+mod elevation;
+mod heatmap;
+mod hydrology;
+mod params;
+mod render;
+
+use params::PlanetGenParams;
+
+const SEED: u32 = 42;
+const WIDTH: usize = 1024;
+const HEIGHT: usize = 512;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all("output")?;
+    let params = PlanetGenParams::earth_like();
+
+    let mut elev = elevation::generate_elevation(WIDTH, HEIGHT, SEED, params.warp_strength);
+    elev.roughen_coastline(params.sea_level, SEED.wrapping_add(10));
+    let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, params.sea_level);
+
+    let temperature = climate::generate_temperature(&elev, &params, 0.0);
+    let is_sea_ice = climate::generate_sea_ice(&temperature, &is_ocean, params.sea_ice_temp_threshold);
+    let precipitation =
+        climate::generate_precipitation(&elev, &is_ocean, &temperature, &is_sea_ice, &params, 0.0);
+    let is_glacier = climate::generate_glacier(&temperature, &is_ocean, params.glacier_temp_threshold);
+    let aridity = climate::generate_aridity(&temperature, &precipitation, params.et_factor);
+    let diurnal_swing = climate::generate_diurnal_swing(&temperature, &aridity, &params);
+
+    let hydro = hydrology::generate_hydrology(&elev, &is_ocean, &precipitation, &is_glacier, &params);
+
+    render::save_elevation(&elev, "output/elevation.png")?;
+    render::save_temperature(&temperature, "output/temperature.png")?;
+    render::save_precipitation(&precipitation, "output/precipitation.png")?;
+    render::save_aridity(&aridity, "output/aridity.png")?;
+    render::save_diurnal_swing(&diurnal_swing, "output/diurnal_swing.png")?;
+    render::save_hydrology(&hydro.map, "output/hydrology.png")?;
+    render::save_glacier(&is_glacier, &temperature, params.glacier_temp_threshold, WIDTH, HEIGHT, "output/glacier.png")?;
+    render::save_sea_ice(&is_sea_ice, &temperature, params.sea_ice_temp_threshold, WIDTH, HEIGHT, "output/sea_ice.png")?;
+
+    println!("Done — 8 layers written to output/");
+    Ok(())
 }
