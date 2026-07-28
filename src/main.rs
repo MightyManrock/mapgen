@@ -37,7 +37,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render::save_hydrology(&hydro.map, "output/hydrology.png")?;
     render::save_glacier(&is_glacier, &temperature, params.glacier_temp_threshold, WIDTH, HEIGHT, "output/glacier.png")?;
     render::save_sea_ice(&is_sea_ice, &temperature, params.sea_ice_temp_threshold, WIDTH, HEIGHT, "output/sea_ice.png")?;
+    render::save_composite(
+        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &is_ocean, &is_glacier, &is_sea_ice,
+        &params, "output/composite.png",
+    )?;
 
-    println!("Done — 8 layers written to output/");
+    println!("Done — 9 layers written to output/");
     Ok(())
 }
