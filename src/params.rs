@@ -22,6 +22,7 @@ pub struct PlanetGenParams {
     pub river_threshold: f64,
     pub aquifer_probability: f64,
     pub glacier_melt_factor: f64,
+    pub radius_km: f64,
 }
 
 impl PlanetGenParams {
@@ -48,6 +49,7 @@ impl PlanetGenParams {
             river_threshold: 400.0,
             aquifer_probability: 0.35,
             glacier_melt_factor: 2.5,
+            radius_km: 6371.0,
         }
     }
 }
