@@ -1,5 +1,5 @@
 use crate::heatmap::HeatMap;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 // ── Region detection ─────────────────────────────────────────────────────────
 
@@ -107,8 +107,20 @@ impl Region {
 /// Regions smaller than `min_size` cells are absorbed into their most-contacted
 /// same-type neighbor.
 ///
-/// Returns a flat region-ID map (one u32 per pixel) and a Vec<Region> sorted
-/// largest-first.
+/// # `u32::MAX` sentinel
+///
+/// The returned region-ID map may contain `u32::MAX` for some cells. This
+/// happens when a below-`min_size` Ocean or Frozen region has no same-kind
+/// neighbor to absorb into: its cells are discarded (`region_cells[sid].clear()`)
+/// rather than merged. Phase 2.5's island/archipelago rescue logic only handles
+/// orphaned *Land* cells (`free_land` checks `kind == CellKind::Land`), so an
+/// isolated small Ocean or Frozen region (e.g. a tiny below-threshold sea-ice
+/// speck) is never rescued and its cells remain unmapped. Callers (rendering,
+/// marker export, etc.) must treat `u32::MAX` as "no region" and must not
+/// assume every cell resolves to a valid region ID.
+///
+/// Returns a flat region-ID map (one u32 per pixel, see sentinel note above)
+/// and a Vec<Region> sorted by `id`.
 pub fn detect_regions(
     elevation:       &HeatMap,
     temperature:     &HeatMap,
@@ -190,7 +202,7 @@ pub fn detect_regions(
             .map(|(i, _)| i);
         let Some(sid) = small else { break };
 
-        let mut counts: HashMap<u32, usize> = HashMap::new();
+        let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
         let skind = region_kind[sid];
         for &idx in &region_cells[sid] {
             let x = idx % width;
@@ -230,7 +242,7 @@ pub fn detect_regions(
     }).collect();
 
     // Group free-land cells by original region ID (each ID = one connected component).
-    let mut comp_map: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut comp_map: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for idx in 0..n {
         if free_land[idx] { comp_map.entry(region_map[idx]).or_default().push(idx); }
     }
