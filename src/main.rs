@@ -4,6 +4,7 @@ mod export;
 mod heatmap;
 mod hydrology;
 mod params;
+mod regions;
 mod render;
 
 use params::PlanetGenParams;
