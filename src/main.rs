@@ -50,6 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &is_ocean, &is_glacier, &is_sea_ice,
         &params, "output/composite.png",
     )?;
+    render::save_regions(
+        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &is_ocean, &is_glacier, &is_sea_ice,
+        &params, &region_map, &regions, "output/regions.png",
+    )?;
 
     export::save_markers_json(
         WIDTH * render::RENDER_SCALE,

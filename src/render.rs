@@ -289,7 +289,9 @@ const CONTOUR_DARKEN_WATER: f64 = 0.95;
 /// anti-aliased water/glacier/sea-ice edges. Ported from demiurge-rust's
 /// render_composite_map, minus the salt-flat branch (mapgen has no salt-flat
 /// generator).
-pub fn save_composite(
+fn composite_pixel_color(
+    rx: u32,
+    ry: u32,
     width: usize,
     height: usize,
     hydro_map: &HeatMap,
@@ -299,11 +301,10 @@ pub fn save_composite(
     is_glacier: &[bool],
     is_sea_ice: &[bool],
     params: &PlanetGenParams,
-    path: &str,
-) -> Result<(), image::ImageError> {
+) -> Rgb<u8> {
     let render_width = width * RENDER_SCALE;
     let render_height = height * RENDER_SCALE;
-    let img = ImageBuffer::from_fn(render_width as u32, render_height as u32, |rx, ry| {
+    {
         let nx = rx as f64 / render_width as f64;
         let ny = ry as f64 / render_height as f64;
         let hydro_nearest = hydro_map.sample_nearest(nx, ny);
@@ -400,6 +401,102 @@ pub fn save_composite(
             ];
         }
         Rgb(color)
+    }
+}
+
+pub fn save_composite(
+    width: usize,
+    height: usize,
+    hydro_map: &HeatMap,
+    elevation: &HeatMap,
+    temperature: &HeatMap,
+    is_ocean: &[bool],
+    is_glacier: &[bool],
+    is_sea_ice: &[bool],
+    params: &PlanetGenParams,
+    path: &str,
+) -> Result<(), image::ImageError> {
+    let render_width = width * RENDER_SCALE;
+    let render_height = height * RENDER_SCALE;
+    let img = ImageBuffer::from_fn(render_width as u32, render_height as u32, |rx, ry| {
+        composite_pixel_color(
+            rx, ry, width, height, hydro_map, elevation, temperature, is_ocean, is_glacier,
+            is_sea_ice, params,
+        )
     });
+    img.save(path)
+}
+
+/// Debug/verification render: same terrain as `save_composite`, but with
+/// region boundaries overlaid in red and a small marker dot at each land
+/// region's label point. Not a replacement for composite.png.
+pub fn save_regions(
+    width: usize,
+    height: usize,
+    hydro_map: &HeatMap,
+    elevation: &HeatMap,
+    temperature: &HeatMap,
+    is_ocean: &[bool],
+    is_glacier: &[bool],
+    is_sea_ice: &[bool],
+    params: &PlanetGenParams,
+    region_map: &[u32],
+    regions: &[crate::regions::Region],
+    path: &str,
+) -> Result<(), image::ImageError> {
+    let render_width = width * RENDER_SCALE;
+    let render_height = height * RENDER_SCALE;
+
+    let mut img = ImageBuffer::from_fn(render_width as u32, render_height as u32, |rx, ry| {
+        let dx = rx as usize / RENDER_SCALE;
+        let dy = ry as usize / RENDER_SCALE;
+        let own = region_map[dy * width + dx];
+
+        let left = region_map[dy * width + (dx + width - 1) % width];
+        let right = region_map[dy * width + (dx + 1) % width];
+        let mut is_boundary = left != own || right != own;
+        if dy > 0 {
+            let up = region_map[(dy - 1) * width + dx];
+            is_boundary = is_boundary || up != own;
+        }
+        if dy < height - 1 {
+            let down = region_map[(dy + 1) * width + dx];
+            is_boundary = is_boundary || down != own;
+        }
+
+        if is_boundary {
+            Rgb([220u8, 30, 30])
+        } else {
+            composite_pixel_color(
+                rx, ry, width, height, hydro_map, elevation, temperature, is_ocean, is_glacier,
+                is_sea_ice, params,
+            )
+        }
+    });
+
+    for region in regions {
+        if region.kind != crate::regions::CellKind::Land {
+            continue;
+        }
+        let cx = (region.label_pos.0 * RENDER_SCALE + RENDER_SCALE / 2) as i64;
+        let cy = (region.label_pos.1 * RENDER_SCALE + RENDER_SCALE / 2) as i64;
+        for py in (cy - 4)..=(cy + 4) {
+            if py < 0 || py >= render_height as i64 {
+                continue;
+            }
+            for px in (cx - 4)..=(cx + 4) {
+                if px < 0 || px >= render_width as i64 {
+                    continue;
+                }
+                let dist = (((px - cx).pow(2) + (py - cy).pow(2)) as f64).sqrt();
+                if dist <= 3.0 {
+                    img.put_pixel(px as u32, py as u32, Rgb([255, 255, 255]));
+                } else if dist <= 4.0 {
+                    img.put_pixel(px as u32, py as u32, Rgb([0, 0, 0]));
+                }
+            }
+        }
+    }
+
     img.save(path)
 }
