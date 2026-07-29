@@ -294,6 +294,38 @@ pub fn save_sea_ice(
     img.save(path)
 }
 
+/// Debug/verification render: plain dark land / ocean silhouette with a
+/// red (warm) / blue (cool) overlay showing the current bias magnitude
+/// and sign at each cell, independent of how it reads once blended into
+/// the full composite/temperature renders.
+pub fn save_ocean_currents(
+    width: usize,
+    height: usize,
+    is_ocean: &[bool],
+    params: &PlanetGenParams,
+    path: &str,
+) -> Result<(), image::ImageError> {
+    let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
+        let xi = x as usize;
+        let yi = y as usize;
+        let idx = yi * width + xi;
+        let abs_lat = (yi as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
+        let raw = crate::climate::current_bias_raw(xi, yi, width, is_ocean, params);
+        let signed = raw * crate::climate::current_lat_envelope(abs_lat);
+        let base: [u8; 3] = if is_ocean[idx] { [40, 40, 60] } else { [70, 65, 55] };
+        let intensity = (signed.abs() * 255.0).clamp(0.0, 255.0) as u8;
+        let color = if signed > 0.0 {
+            [base[0].saturating_add(intensity), base[1], base[2]]
+        } else if signed < 0.0 {
+            [base[0], base[1], base[2].saturating_add(intensity)]
+        } else {
+            base
+        };
+        Rgb(color)
+    });
+    img.save(path)
+}
+
 pub const RENDER_SCALE: usize = 3;
 const N_DITHER_LEVELS: usize = 16;
 const N_CONTOURS: usize = 40;

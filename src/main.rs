@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render::save_hydrology(&hydro.map, "output/hydrology.png")?;
     render::save_glacier(&is_glacier, &temperature, params.glacier_temp_threshold, WIDTH, HEIGHT, "output/glacier.png")?;
     render::save_sea_ice(&is_sea_ice, &temperature, params.sea_ice_temp_threshold, WIDTH, HEIGHT, "output/sea_ice.png")?;
+    render::save_ocean_currents(WIDTH, HEIGHT, &is_ocean, &params, "output/ocean_currents.png")?;
     render::save_composite(
         WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &is_ocean, &is_glacier,
         &is_sea_ice, &params, "output/composite.png",
@@ -67,6 +68,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "output/composite.markers.json",
     )?;
 
-    println!("Done — 10 layers written to output/");
+    println!("Done — 11 layers written to output/");
     Ok(())
 }
