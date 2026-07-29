@@ -29,6 +29,9 @@ pub struct PlanetGenParams {
     pub island_coast_dist: usize,
     pub island_arch_dist: usize,
     pub lon_weight: f64,
+    pub current_temp_bias: f64,
+    pub current_search_dist: usize,
+    pub current_bleed_dist: usize,
 }
 
 impl PlanetGenParams {
@@ -62,6 +65,9 @@ impl PlanetGenParams {
             island_coast_dist: 3,
             island_arch_dist: 25,
             lon_weight: 0.82,
+            current_temp_bias: 0.10,
+            current_search_dist: 40,
+            current_bleed_dist: 8,
         }
     }
 }
