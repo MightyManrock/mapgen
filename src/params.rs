@@ -36,7 +36,7 @@ impl PlanetGenParams {
     pub fn earth_like() -> Self {
         Self {
             warp_strength: 0.2,
-            sea_level: 0.5,
+            sea_level: 0.525,
             axial_tilt: 23.5,
             temp_baseline: 1.0,
             temp_gradient: 1.0,
