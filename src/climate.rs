@@ -5,22 +5,23 @@ use noise::{Fbm, NoiseFn, Perlin};
 use crate::heatmap::HeatMap;
 use crate::params::PlanetGenParams;
 
-/// Smooth per-cell latitude offset that breaks up otherwise razor-straight
+/// Smooth per-column latitude offset that breaks up otherwise razor-straight
 /// circulation bands (`lat_band_factor`/`westerly_weight` are pure functions
-/// of latitude with zero longitude variation). Sampled at 3D sphere-surface
-/// coordinates — same technique as `elevation::generate_elevation` — so it's
-/// seamless in x and converges naturally at the poles.
-const JITTER_AMPLITUDE: f64 = 0.30;
+/// of latitude with zero longitude variation). A pure function of longitude
+/// only (sampled on a 2D circle, ignoring latitude) so every row shifts
+/// together at a given x — a coherent meandering line, not a 2D noise field
+/// (which would carve blob-shaped "islands" of shifted latitude instead of
+/// a wavy boundary, since this codebase's low-frequency FBM is tuned to
+/// produce continent-like blobs elsewhere on purpose). Seamless in x since
+/// it's a closed loop around the circle.
+const JITTER_AMPLITUDE: f64 = 0.18;
 
-fn lat_jitter(x: usize, y: usize, width: usize, height: usize, fbm: &Fbm<Perlin>) -> f64 {
+fn lat_jitter(x: usize, width: usize, fbm: &Fbm<Perlin>) -> f64 {
     let lon = x as f64 / width as f64 * std::f64::consts::TAU;
-    let lat = (y as f64 / height as f64 - 0.5) * PI;
-    let cos_lat = lat.cos();
-    let r = 3.5 / std::f64::consts::TAU;
-    let sx = r * cos_lat * lon.cos();
-    let sy = r * cos_lat * lon.sin();
-    let sz = r * lat.sin();
-    fbm.get([sx, sy, sz]) * JITTER_AMPLITUDE
+    let r = 1.5 / std::f64::consts::TAU;
+    let sx = r * lon.cos();
+    let sy = r * lon.sin();
+    fbm.get([sx, sy]) * JITTER_AMPLITUDE
 }
 
 /// Latitude cosine + elevation lapse rate, scaled by planet params.
@@ -43,7 +44,7 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
             let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
+            let jitter = lat_jitter(x, width, &jitter_fbm);
             let shifted_lat = (abs_lat - season_offset + jitter).abs().clamp(0.0, 1.0);
             let lat_shape = (shifted_lat * std::f64::consts::FRAC_PI_2).cos();
             let lat_temp = params.temp_baseline * (1.0 - params.temp_gradient * (1.0 - lat_shape));
@@ -137,7 +138,7 @@ pub fn generate_precipitation(
             let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
+            let jitter = lat_jitter(x, width, &jitter_fbm);
             let w = westerly_weight(abs_lat + jitter, season_offset);
             let moisture = moisture_west[idx] * w + moisture_east[idx] * (1.0 - w);
             let band = lat_band_factor(abs_lat + jitter, season_offset);
