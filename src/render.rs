@@ -155,7 +155,7 @@ fn biome_terrain_color(temp_t: f64, precip_t: f64, land_t: f64) -> [u8; 3] {
             ([220, 200, 150], 0.00), // coastal sand (shared, unchanged)
             (base,            0.05), // climate-space biome color
             (base_dark,       0.55), // mild darkening toward "hills"
-            ([110, 120, 70],  0.60), // highland (unchanged)
+            ([150, 135, 110], 0.60), // highland — neutral rock-brown, no green cast
             ([140, 110, 80],  0.75), // rocky terrain (unchanged)
             ([170, 160, 150], 0.88), // grey rock (unchanged)
             ([230, 235, 240], 0.95), // snow line (unchanged)
