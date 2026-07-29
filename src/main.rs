@@ -66,6 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "output/composite.markers.json",
     )?;
 
-    println!("Done — 9 layers written to output/");
+    println!("Done — 10 layers written to output/");
     Ok(())
 }
