@@ -65,6 +65,140 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
     HeatMap { width, height, data }
 }
 
+/// Directional coastline search from an ocean cell along its own row.
+/// Returns a signed raw bias in [-1, 1]: positive = nearest coastline is
+/// to the west (this ocean cell sits on that landmass's *east* side —
+/// warm, western-boundary-current analog), negative = nearest coastline
+/// is to the east (cell sits on that landmass's *west* side — cool,
+/// eastern-boundary-current analog). Falls off linearly from 1.0 at
+/// distance 1 to 0.0 at `search_dist`. Zero if no coastline found within
+/// the bound in either direction, or if both directions tie.
+fn ocean_cell_bias(x: usize, y: usize, width: usize, is_ocean: &[bool], search_dist: usize) -> f64 {
+    let row = y * width;
+    let mut dist_w = None;
+    for d in 1..=search_dist {
+        let nx = (x + width - d) % width;
+        if !is_ocean[row + nx] {
+            dist_w = Some(d);
+            break;
+        }
+    }
+    let mut dist_e = None;
+    for d in 1..=search_dist {
+        let nx = (x + d) % width;
+        if !is_ocean[row + nx] {
+            dist_e = Some(d);
+            break;
+        }
+    }
+    match (dist_w, dist_e) {
+        (Some(dw), Some(de)) => {
+            if dw < de {
+                1.0 - dw as f64 / search_dist as f64
+            } else if de < dw {
+                -(1.0 - de as f64 / search_dist as f64)
+            } else {
+                0.0
+            }
+        }
+        (Some(dw), None) => 1.0 - dw as f64 / search_dist as f64,
+        (None, Some(de)) => -(1.0 - de as f64 / search_dist as f64),
+        (None, None) => 0.0,
+    }
+}
+
+/// Per-cell raw current bias (before the latitude envelope), for both
+/// ocean and land cells. Ocean cells use `ocean_cell_bias` directly. Land
+/// cells inherit a fraction of the *nearest ocean cell's own bias* (same
+/// sign, scaled down by linear falloff over `params.current_bleed_dist`)
+/// — this bleeds "whatever the adjacent water's temperature signature
+/// is" onto the coast, rather than re-deriving a sign from the land
+/// cell's own perspective. `pub(crate)` so `render::save_ocean_currents`
+/// can reuse it for the debug visualization without duplicating this
+/// logic.
+pub(crate) fn current_bias_raw(x: usize, y: usize, width: usize, is_ocean: &[bool], params: &PlanetGenParams) -> f64 {
+    let idx = y * width + x;
+    if is_ocean[idx] {
+        return ocean_cell_bias(x, y, width, is_ocean, params.current_search_dist);
+    }
+    let row = y * width;
+    let mut nearest: Option<(usize, usize)> = None;
+    for d in 1..=params.current_bleed_dist {
+        let wx = (x + width - d) % width;
+        if is_ocean[row + wx] {
+            nearest = Some((wx, d));
+            break;
+        }
+    }
+    for d in 1..=params.current_bleed_dist {
+        let ex = (x + d) % width;
+        if is_ocean[row + ex] {
+            if nearest.is_none_or(|(_, nd)| d < nd) {
+                nearest = Some((ex, d));
+            }
+            break;
+        }
+    }
+    match nearest {
+        Some((ox, d)) => {
+            let ocean_bias = ocean_cell_bias(ox, y, width, is_ocean, params.current_search_dist);
+            let falloff = 1.0 - d as f64 / params.current_bleed_dist as f64;
+            ocean_bias * falloff
+        }
+        None => 0.0,
+    }
+}
+
+/// Latitude envelope for current strength: ~0 at the equator (currents
+/// there are zonal, not coastal-boundary-driven), peaking around 31°
+/// (subtropical gyre latitudes), fading to ~0 by the poles (dominated by
+/// different circulation). Same piecewise-linear-stops technique as
+/// `lat_band_factor`/`westerly_weight` (kept as its own small duplicate,
+/// not factored into a shared helper, matching this file's existing
+/// precedent of those two functions also duplicating the same
+/// interpolation loop rather than sharing one — this task doesn't touch
+/// either of them). `pub(crate)` for the same reuse reason as
+/// `current_bias_raw`.
+pub(crate) fn current_lat_envelope(abs_lat: f64) -> f64 {
+    let stops: &[(f64, f64)] = &[
+        (0.00, 0.00),
+        (0.15, 0.30),
+        (0.35, 1.00),
+        (0.55, 0.40),
+        (0.75, 0.00),
+        (1.00, 0.00),
+    ];
+    for i in 0..stops.len() - 1 {
+        let (ta, va) = stops[i];
+        let (tb, vb) = stops[i + 1];
+        if abs_lat <= tb {
+            let t = (abs_lat - ta) / (tb - ta);
+            return va + (vb - va) * t;
+        }
+    }
+    stops.last().unwrap().1
+}
+
+/// Applies the coastline-relative current bias to a base temperature
+/// field. Returns a new field (does not mutate the input), same pattern
+/// as `generate_aridity` taking existing fields and producing a derived
+/// one.
+pub fn apply_ocean_currents(temperature: &HeatMap, is_ocean: &[bool], params: &PlanetGenParams) -> HeatMap {
+    let width = temperature.width;
+    let height = temperature.height;
+    let data = (0..width * height)
+        .map(|idx| {
+            let x = idx % width;
+            let y = idx / width;
+            let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
+            let raw = current_bias_raw(x, y, width, is_ocean, params);
+            let bias = raw * current_lat_envelope(abs_lat) * params.current_temp_bias;
+            (temperature.data[idx] + bias).clamp(0.0, 1.0)
+        })
+        .collect();
+    HeatMap { width, height, data }
+}
+
 /// Atmospheric band function + row-sweep moisture advection + rain shadow.
 ///
 /// Two moisture fields are accumulated via double-pass row sweeps (one for
