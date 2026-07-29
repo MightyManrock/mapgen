@@ -23,6 +23,12 @@ pub struct PlanetGenParams {
     pub aquifer_probability: f64,
     pub glacier_melt_factor: f64,
     pub radius_km: f64,
+    pub land_threshold: f64,
+    pub ocean_threshold: f64,
+    pub region_min_size: usize,
+    pub island_coast_dist: usize,
+    pub island_arch_dist: usize,
+    pub lon_weight: f64,
 }
 
 impl PlanetGenParams {
@@ -50,6 +56,12 @@ impl PlanetGenParams {
             aquifer_probability: 0.35,
             glacier_melt_factor: 2.5,
             radius_km: 6371.0,
+            land_threshold: 0.15,
+            ocean_threshold: 0.59,
+            region_min_size: 150,
+            island_coast_dist: 3,
+            island_arch_dist: 25,
+            lon_weight: 0.82,
         }
     }
 }
