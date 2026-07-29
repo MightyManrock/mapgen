@@ -277,7 +277,7 @@ pub fn save_sea_ice(
     img.save(path)
 }
 
-const RENDER_SCALE: usize = 3;
+pub const RENDER_SCALE: usize = 3;
 const N_DITHER_LEVELS: usize = 16;
 const N_CONTOURS: usize = 40;
 const CONTOUR_DARKEN: f64 = 0.90;
