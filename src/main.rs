@@ -60,6 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HEIGHT * render::RENDER_SCALE,
         &params,
         "composite.png",
+        &regions,
+        WIDTH,
+        HEIGHT,
         "output/composite.markers.json",
     )?;
 

@@ -33,10 +33,22 @@ struct Measurement {
 struct SecondScreen {}
 
 #[derive(Serialize)]
+struct Marker {
+    id: String,
+    x: f64,
+    y: f64,
+    layer: &'static str,
+    link: &'static str,
+    #[serde(rename = "iconKey")]
+    icon_key: &'static str,
+    tooltip: String,
+}
+
+#[derive(Serialize)]
 struct MarkersFile {
     size: Size,
     layers: Vec<Layer>,
-    markers: Vec<()>,
+    markers: Vec<Marker>,
     bases: Vec<String>,
     overlays: Vec<()>,
     #[serde(rename = "activeBase")]
@@ -69,6 +81,9 @@ pub fn save_markers_json(
     render_height: usize,
     params: &PlanetGenParams,
     image_filename: &str,
+    regions: &[crate::regions::Region],
+    grid_width: usize,
+    grid_height: usize,
     path: &str,
 ) -> std::io::Result<()> {
     let mut scales = BTreeMap::new();
@@ -76,6 +91,20 @@ pub fn save_markers_json(
         image_filename.to_string(),
         meters_per_pixel(params, render_height),
     );
+
+    let markers: Vec<Marker> = regions
+        .iter()
+        .filter(|r| r.kind == crate::regions::CellKind::Land)
+        .map(|r| Marker {
+            id: format!("region_{}", r.id),
+            x: (r.label_pos.0 as f64 + 0.5) / grid_width as f64,
+            y: (r.label_pos.1 as f64 + 0.5) / grid_height as f64,
+            layer: "default",
+            link: "",
+            icon_key: "pinRed",
+            tooltip: r.character(),
+        })
+        .collect();
 
     let data = MarkersFile {
         size: Size {
@@ -88,7 +117,7 @@ pub fn save_markers_json(
             visible: true,
             locked: false,
         }],
-        markers: vec![],
+        markers,
         bases: vec![image_filename.to_string()],
         overlays: vec![],
         active_base: image_filename.to_string(),
