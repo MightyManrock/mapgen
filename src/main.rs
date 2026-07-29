@@ -21,10 +21,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     elev.roughen_coastline(params.sea_level, SEED.wrapping_add(10));
     let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, params.sea_level);
 
-    let temperature = climate::generate_temperature(&elev, &params, 0.0);
+    let temperature = climate::generate_temperature(&elev, &params, 0.0, SEED);
     let is_sea_ice = climate::generate_sea_ice(&temperature, &is_ocean, params.sea_ice_temp_threshold);
     let precipitation =
-        climate::generate_precipitation(&elev, &is_ocean, &temperature, &is_sea_ice, &params, 0.0);
+        climate::generate_precipitation(&elev, &is_ocean, &temperature, &is_sea_ice, &params, 0.0, SEED);
     let is_glacier = climate::generate_glacier(&temperature, &is_ocean, params.glacier_temp_threshold);
     let aridity = climate::generate_aridity(&temperature, &precipitation, params.et_factor);
     let diurnal_swing = climate::generate_diurnal_swing(&temperature, &aridity, &params);

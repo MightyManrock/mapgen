@@ -1,13 +1,33 @@
 use std::f64::consts::PI;
 
+use noise::{Fbm, NoiseFn, Perlin};
+
 use crate::heatmap::HeatMap;
 use crate::params::PlanetGenParams;
+
+/// Smooth per-cell latitude offset that breaks up otherwise razor-straight
+/// circulation bands (`lat_band_factor`/`westerly_weight` are pure functions
+/// of latitude with zero longitude variation). Sampled at 3D sphere-surface
+/// coordinates — same technique as `elevation::generate_elevation` — so it's
+/// seamless in x and converges naturally at the poles.
+const JITTER_AMPLITUDE: f64 = 0.04;
+
+fn lat_jitter(x: usize, y: usize, width: usize, height: usize, fbm: &Fbm<Perlin>) -> f64 {
+    let lon = x as f64 / width as f64 * std::f64::consts::TAU;
+    let lat = (y as f64 / height as f64 - 0.5) * PI;
+    let cos_lat = lat.cos();
+    let r = 3.5 / std::f64::consts::TAU;
+    let sx = r * cos_lat * lon.cos();
+    let sy = r * cos_lat * lon.sin();
+    let sz = r * lat.sin();
+    fbm.get([sx, sy, sz]) * JITTER_AMPLITUDE
+}
 
 /// Latitude cosine + elevation lapse rate, scaled by planet params.
 ///
 /// `temp_baseline` sets the equatorial surface temperature [0,1]; `temp_gradient`
 /// controls how steeply it drops toward the poles (1.0 = full drop to 0, 0.1 = nearly flat).
-pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, season_phase: f64) -> HeatMap {
+pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, season_phase: f64, seed: u32) -> HeatMap {
     let width = elevation.width;
     let height = elevation.height;
 
@@ -16,11 +36,15 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
     let season_offset = (params.axial_tilt.to_radians() * 0.5 / (PI / 2.0))
         * (season_phase * 2.0 * PI).cos();
 
+    let jitter_fbm = Fbm::<Perlin>::new(seed.wrapping_add(20));
+
     let data = (0..width * height)
         .map(|idx| {
+            let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let shifted_lat = (abs_lat - season_offset).abs().clamp(0.0, 1.0);
+            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
+            let shifted_lat = (abs_lat - season_offset + jitter).abs().clamp(0.0, 1.0);
             let lat_shape = (shifted_lat * std::f64::consts::FRAC_PI_2).cos();
             let lat_temp = params.temp_baseline * (1.0 - params.temp_gradient * (1.0 - lat_shape));
             (lat_temp - elevation.data[idx] * params.lapse_factor).clamp(0.0, 1.0)
@@ -44,6 +68,7 @@ pub fn generate_precipitation(
     is_sea_ice: &[bool],
     params: &PlanetGenParams,
     season_phase: f64,
+    seed: u32,
 ) -> HeatMap {
     let width = elevation.width;
     let height = elevation.height;
@@ -105,13 +130,17 @@ pub fn generate_precipitation(
     // Cold air holds less moisture: this dampens precipitation at high latitudes
     // and high altitudes independently of the circulation band factor.
     // Range: 0.3 (arctic) → 1.0 (tropical), so even the coldest cells get some snowfall.
+    let jitter_fbm = Fbm::<Perlin>::new(seed.wrapping_add(21));
+
     let data = (0..n)
         .map(|idx| {
+            let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let w = westerly_weight(abs_lat, season_offset);
+            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
+            let w = westerly_weight(abs_lat + jitter, season_offset);
             let moisture = moisture_west[idx] * w + moisture_east[idx] * (1.0 - w);
-            let band = lat_band_factor(abs_lat, season_offset);
+            let band = lat_band_factor(abs_lat + jitter, season_offset);
             let moisture_capacity = (0.3 + 0.7 * temperature.data[idx]).clamp(0.3, 1.0);
             (band * (params.base_arid + moisture * (1.0 - params.base_arid)) * moisture_capacity).clamp(0.0, 1.0)
         })
