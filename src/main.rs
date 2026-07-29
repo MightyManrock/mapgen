@@ -29,6 +29,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aridity = climate::generate_aridity(&temperature, &precipitation, params.et_factor);
     let diurnal_swing = climate::generate_diurnal_swing(&temperature, &aridity, &params);
 
+    let (region_map, regions) = regions::detect_regions(
+        &elev, &temperature, &diurnal_swing, &precipitation, &aridity,
+        &is_ocean, &is_glacier, &is_sea_ice,
+        params.land_threshold, params.ocean_threshold, params.region_min_size,
+        params.island_coast_dist, params.island_arch_dist, params.lon_weight,
+    );
+
     let hydro = hydrology::generate_hydrology(&elev, &is_ocean, &precipitation, &is_glacier, &params);
 
     render::save_elevation(&elev, "output/elevation.png")?;
