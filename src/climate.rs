@@ -10,7 +10,7 @@ use crate::params::PlanetGenParams;
 /// of latitude with zero longitude variation). Sampled at 3D sphere-surface
 /// coordinates — same technique as `elevation::generate_elevation` — so it's
 /// seamless in x and converges naturally at the poles.
-const JITTER_AMPLITUDE: f64 = 0.04;
+const JITTER_AMPLITUDE: f64 = 0.30;
 
 fn lat_jitter(x: usize, y: usize, width: usize, height: usize, fbm: &Fbm<Perlin>) -> f64 {
     let lon = x as f64 / width as f64 * std::f64::consts::TAU;
