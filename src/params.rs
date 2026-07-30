@@ -32,6 +32,18 @@ pub struct PlanetGenParams {
     pub current_temp_bias: f64,
     pub current_search_dist: usize,
     pub current_bleed_dist: usize,
+    // Freshwater greening (render-only vegetation shift, not a climate change)
+    pub greening_radius: usize,
+    pub greening_aquifer_strength: f64,
+    pub greening_ocean_damp_dist: usize,
+    pub greening_strength: f64,
+    pub greening_temp_floor: f64,
+    pub greening_temp_full: f64,
+    // Lake-effect climate (one-way, applied after hydrology)
+    pub lake_effect_min_size: usize,
+    pub lake_halo_dist: usize,
+    pub lake_precip_boost: f64,
+    pub lake_swing_damp: f64,
 }
 
 impl PlanetGenParams {
@@ -68,6 +80,16 @@ impl PlanetGenParams {
             current_temp_bias: 0.10,
             current_search_dist: 40,
             current_bleed_dist: 8,
+            greening_radius: 6,
+            greening_aquifer_strength: 0.4,
+            greening_ocean_damp_dist: 5,
+            greening_strength: 0.35,
+            greening_temp_floor: 0.30,
+            greening_temp_full: 0.45,
+            lake_effect_min_size: 12,
+            lake_halo_dist: 6,
+            lake_precip_boost: 0.08,
+            lake_swing_damp: 0.4,
         }
     }
 }
