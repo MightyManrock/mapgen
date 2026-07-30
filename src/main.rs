@@ -64,12 +64,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render::save_ocean_currents(WIDTH, HEIGHT, &is_ocean, &params, "output/ocean_currents.png")?;
     render::save_greening(WIDTH, HEIGHT, &is_ocean, &green, "output/greening.png")?;
     render::save_composite(
-        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &is_ocean,
-        &is_glacier, &is_sea_ice, &params, "output/composite.png",
+        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &mouth_influence,
+        &is_ocean, &is_glacier, &is_sea_ice, &params, "output/composite.png",
     )?;
     render::save_regions(
-        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &is_ocean,
-        &is_glacier, &is_sea_ice, &params, &region_map, &regions, "output/regions.png",
+        WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &mouth_influence,
+        &is_ocean, &is_glacier, &is_sea_ice, &params, &region_map, &regions, "output/regions.png",
     )?;
 
     export::save_markers_json(

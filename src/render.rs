@@ -128,13 +128,34 @@ fn aridity_color(t: f64) -> [u8; 3] {
     )
 }
 
+/// Beach color from local climate + river-mouth proximity. Applied only at
+/// the elevation ramp's waterline stop; the slope-driven cliff collapse
+/// happens in `biome_terrain_color` via `shore_cliff_t`, not here.
+fn shore_beach_color(temp_t: f64, precip_t: f64, mouth_t: f64) -> [u8; 3] {
+    const SAND: [u8; 3] = [220, 200, 150]; // temperate/arid default (the old universal color)
+    const SHINGLE: [u8; 3] = [155, 152, 148]; // cold grey gravel shore
+    const MANGROVE: [u8; 3] = [110, 125, 80]; // hot+wet muddy green
+    const DELTA_MUD: [u8; 3] = [155, 130, 100]; // river-mouth sediment
+
+    let cold_t = ((0.25 - temp_t) / 0.10).clamp(0.0, 1.0);
+    let mut beach = lerp_color(SAND, SHINGLE, cold_t);
+    let mangrove_t = ((temp_t - 0.60) / 0.15)
+        .min((precip_t - 0.55) / 0.20)
+        .clamp(0.0, 1.0);
+    beach = lerp_color(beach, MANGROVE, mangrove_t);
+    // Delta mud overrides the climate color but never fully saturates.
+    lerp_color(beach, DELTA_MUD, mouth_t * 0.8)
+}
+
 /// Land color from climate-space biome interpolation, elevation-shaded.
 /// `temp_t`/`precip_t` are the raw (undithered) normalized [0,1] climate
 /// values at this pixel — continuous by construction, no dithering needed
 /// since there's no discrete category to break banding on. `land_t` is
 /// the dithered, normalized elevation-above-sea-level value (same role as
-/// the old `terrain_color`'s input).
-fn biome_terrain_color(temp_t: f64, precip_t: f64, land_t: f64) -> [u8; 3] {
+/// the old `terrain_color`'s input). `beach` is the waterline-stop color
+/// from `shore_beach_color`; `shore_cliff_t` collapses that stop into the
+/// biome color as coastal slope rises (steep coast = no beach band).
+fn biome_terrain_color(temp_t: f64, precip_t: f64, land_t: f64, beach: [u8; 3], shore_cliff_t: f64) -> [u8; 3] {
     const COLD_DRY: [u8; 3] = [150, 150, 120]; // tundra
     const COLD_WET: [u8; 3] = [40, 90, 70];    // taiga / boreal forest
     const HOT_DRY: [u8; 3]  = [210, 170, 100]; // desert
@@ -152,7 +173,7 @@ fn biome_terrain_color(temp_t: f64, precip_t: f64, land_t: f64) -> [u8; 3] {
     sample_gradient(
         land_t,
         &[
-            ([220, 200, 150], 0.00), // coastal sand (shared, unchanged)
+            (lerp_color(beach, base, shore_cliff_t), 0.00), // shore (beach → cliff)
             (base,            0.05), // climate-space biome color
             (base_dark,       0.55), // mild darkening toward "hills"
             ([150, 135, 110], 0.60), // highland — neutral rock-brown, no green cast
@@ -366,6 +387,7 @@ fn composite_pixel_color(
     temperature: &HeatMap,
     precipitation: &HeatMap,
     greening: &HeatMap,
+    mouth_influence: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -403,6 +425,19 @@ fn composite_pixel_color(
     let dy = ry as usize / RENDER_SCALE;
     let off_x = rx as usize % RENDER_SCALE;
     let off_y = ry as usize % RENDER_SCALE;
+    // Shore character, shared by both land branches below: coastal slope
+    // (central differences at data-cell scale; sample() wraps x, clamps y)
+    // collapses the beach band into cliff, and the beach color itself
+    // shifts with climate and river-mouth proximity.
+    let shore_temp_t = temperature.sample(nx, ny);
+    let shore_precip_t = precipitation.sample(nx, ny);
+    let dxs = 1.0 / width as f64;
+    let dys = 1.0 / height as f64;
+    let gx = (elevation.sample(nx + dxs, ny) - elevation.sample(nx - dxs, ny)) / 2.0;
+    let gy = (elevation.sample(nx, ny + dys) - elevation.sample(nx, ny - dys)) / 2.0;
+    let slope = (gx * gx + gy * gy).sqrt();
+    let shore_cliff_t = ((slope / params.shore_cliff_slope) * 2.0 - 1.0).clamp(0.0, 1.0);
+    let beach = shore_beach_color(shore_temp_t, shore_precip_t, mouth_influence.sample(nx, ny));
     let mut color = if is_water && is_sea_ice[data_idx] {
         let sea_ice_neighbor = |ndx: i64, ndy: i64| -> bool {
             let nnx = ndx.rem_euclid(width as i64) as usize;
@@ -447,19 +482,17 @@ fn composite_pixel_color(
             let elev_t = elevation.sample(nx, ny);
             let land_t = ((elev_t - params.sea_level) / (1.0 - params.sea_level)).clamp(0.0, 1.0);
             let d = bayer_dither(land_t, rx as usize, ry as usize, N_DITHER_LEVELS);
-            let temp_t = temperature.sample(nx, ny);
-            let precip_t = (precipitation.sample(nx, ny)
+            let precip_t = (shore_precip_t
                 + greening.sample(nx, ny) * params.greening_strength).min(1.0);
-            biome_terrain_color(temp_t, precip_t, d)
+            biome_terrain_color(shore_temp_t, precip_t, d, beach, shore_cliff_t)
         }
     } else {
         let t = elevation.sample(nx, ny);
         let land_t = ((t - params.sea_level) / (1.0 - params.sea_level)).clamp(0.0, 1.0);
         let d = bayer_dither(land_t, rx as usize, ry as usize, N_DITHER_LEVELS);
-        let temp_t = temperature.sample(nx, ny);
-        let precip_t = (precipitation.sample(nx, ny)
+        let precip_t = (shore_precip_t
             + greening.sample(nx, ny) * params.greening_strength).min(1.0);
-        biome_terrain_color(temp_t, precip_t, d)
+        biome_terrain_color(shore_temp_t, precip_t, d, beach, shore_cliff_t)
     };
     let nx_r = (rx as usize + 1) as f64 / render_width as f64;
     let ny_d = (ry as usize + 1) as f64 / render_height as f64;
@@ -485,6 +518,7 @@ pub fn save_composite(
     temperature: &HeatMap,
     precipitation: &HeatMap,
     greening: &HeatMap,
+    mouth_influence: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -496,7 +530,7 @@ pub fn save_composite(
     let img = ImageBuffer::from_fn(render_width as u32, render_height as u32, |rx, ry| {
         composite_pixel_color(
             rx, ry, width, height, hydro_map, elevation, temperature, precipitation, greening,
-            is_ocean, is_glacier, is_sea_ice, params,
+            mouth_influence, is_ocean, is_glacier, is_sea_ice, params,
         )
     });
     img.save(path)
@@ -513,6 +547,7 @@ pub fn save_regions(
     temperature: &HeatMap,
     precipitation: &HeatMap,
     greening: &HeatMap,
+    mouth_influence: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -546,7 +581,7 @@ pub fn save_regions(
         } else {
             composite_pixel_color(
                 rx, ry, width, height, hydro_map, elevation, temperature, precipitation, greening,
-                is_ocean, is_glacier, is_sea_ice, params,
+                mouth_influence, is_ocean, is_glacier, is_sea_ice, params,
             )
         }
     });
