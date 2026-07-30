@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         WIDTH, HEIGHT, &elev, &temperature, &precipitation, &mouth_influence, &is_ocean, &params,
         "output/shore.png",
     )?;
+    render::save_polygons(WIDTH, HEIGHT, &is_ocean, &region_polys, &regions, "output/polygons.png")?;
     render::save_composite(
         WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &mouth_influence,
         &is_ocean, &is_glacier, &is_sea_ice, &params, "output/composite.png",
@@ -93,6 +94,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "output/composite.markers.json",
     )?;
 
-    println!("Done — 13 layers written to output/");
+    println!("Done — 14 layers written to output/");
     Ok(())
 }

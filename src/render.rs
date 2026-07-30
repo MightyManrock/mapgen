@@ -408,6 +408,49 @@ pub fn save_shore(
     img.save(path)
 }
 
+/// Debug/verification render: the simplified region polygons rasterized
+/// over a land/ocean silhouette, each in its region's biome base color —
+/// verifies the traced/simplified loops hug the real region boundaries
+/// (compare against regions.png's red borders) before Obsidian ever sees
+/// the JSON.
+pub fn save_polygons(
+    width: usize,
+    height: usize,
+    is_ocean: &[bool],
+    polygons: &[crate::polygons::RegionPolygons],
+    regions: &[crate::regions::Region],
+    path: &str,
+) -> Result<(), image::ImageError> {
+    let mut img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
+        let idx = y as usize * width + x as usize;
+        if is_ocean[idx] { Rgb([40u8, 40, 60]) } else { Rgb([70u8, 65, 55]) }
+    });
+    let mut draw_line = |a: (f64, f64), b: (f64, f64), color: [u8; 3]| {
+        let steps = ((b.0 - a.0).abs().max((b.1 - a.1).abs()).ceil() as usize).max(1);
+        for s in 0..=steps {
+            let t = s as f64 / steps as f64;
+            let px = (a.0 + (b.0 - a.0) * t).round() as i64;
+            let py = (a.1 + (b.1 - a.1) * t).round() as i64;
+            let px = px.clamp(0, width as i64 - 1) as u32;
+            let py = py.clamp(0, height as i64 - 1) as u32;
+            img.put_pixel(px, py, Rgb(color));
+        }
+    };
+    for rp in polygons {
+        let region = regions
+            .iter()
+            .find(|r| r.id == rp.region_id)
+            .expect("polygon region id always comes from the regions list");
+        let color = biome_base_color(region.mean_temp, region.mean_precip);
+        for lp in &rp.loops {
+            for i in 0..lp.len() {
+                draw_line(lp[i], lp[(i + 1) % lp.len()], color);
+            }
+        }
+    }
+    img.save(path)
+}
+
 /// Debug/verification render: plain land/ocean silhouette with the
 /// freshwater greening intensity overlaid on the green channel.
 pub fn save_greening(
