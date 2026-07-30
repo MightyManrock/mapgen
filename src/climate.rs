@@ -5,19 +5,21 @@ use noise::{Fbm, NoiseFn, Perlin};
 use crate::heatmap::HeatMap;
 use crate::params::PlanetGenParams;
 
-/// Smooth per-column latitude offset that breaks up otherwise razor-straight
+/// Smooth latitude offset that breaks up otherwise razor-straight
 /// circulation bands (`lat_band_factor`/`westerly_weight` are pure functions
-/// of latitude with zero longitude variation). A pure function of longitude
-/// only (sampled on a 2D circle, ignoring latitude) so every row shifts
-/// together at a given x — a coherent meandering line, not a 2D noise field
-/// (which would carve blob-shaped "islands" of shifted latitude instead of
-/// a wavy boundary, since this codebase's low-frequency FBM is tuned to
-/// produce continent-like blobs elsewhere on purpose). Seamless in x since
-/// it's a closed loop around the circle.
+/// of latitude with zero longitude variation). Sampled on a cylinder: the
+/// x/y coordinates trace a closed circle of longitude (seamless in x), and
+/// signed latitude enters as a slowly varying third axis — NOT a full 2D/3D
+/// noise field (which would carve blob-shaped "islands" of shifted latitude
+/// instead of a wavy boundary, since this codebase's low-frequency FBM is
+/// tuned to produce continent-like blobs elsewhere on purpose). The small
+/// z-scale preserves per-column coherence while decorrelating the two
+/// hemispheres — without it the jitter is applied to `abs_lat` symmetrically,
+/// making northern and southern band meanders exact mirror images.
 ///
 /// Amplitude tuned empirically: below ~0.10 the effect was imperceptible;
 /// an earlier 3D sphere-sampled noise field at 0.30 produced blob artifacts
-/// (which prompted the longitude-only redesign above); 0.18 with that
+/// (which prompted the longitude-circle redesign above); 0.18 with that
 /// redesign gives a clear, coherent meander without looking chaotic.
 const JITTER_AMPLITUDE: f64 = 0.18;
 
@@ -25,12 +27,21 @@ const JITTER_AMPLITUDE: f64 = 0.18;
 /// FBM lookup; controls how many meander cycles fit around the planet.
 const JITTER_WAVELENGTH: f64 = 1.5;
 
-fn lat_jitter(x: usize, width: usize, fbm: &Fbm<Perlin>) -> f64 {
+/// Scale on the signed-latitude z-axis of the jitter cylinder. Pole-to-pole
+/// traversal moves ~0.94 noise units vs. the sampling circle's 1.5-unit
+/// circumference — enough to decorrelate the hemispheres at mid-latitudes
+/// while both converge on the shared z=0 slice at the equator (continuous,
+/// no seam). If bands ever read as blobby rather than meandering, reduce
+/// this before touching JITTER_AMPLITUDE.
+const JITTER_LAT_SCALE: f64 = 0.3;
+
+fn lat_jitter(x: usize, y: usize, width: usize, height: usize, fbm: &Fbm<Perlin>) -> f64 {
     let lon = x as f64 / width as f64 * std::f64::consts::TAU;
+    let signed_lat = (y as f64 / height as f64 - 0.5) * PI;
     let r = JITTER_WAVELENGTH / std::f64::consts::TAU;
     let sx = r * lon.cos();
     let sy = r * lon.sin();
-    fbm.get([sx, sy]) * JITTER_AMPLITUDE
+    fbm.get([sx, sy, signed_lat * JITTER_LAT_SCALE]) * JITTER_AMPLITUDE
 }
 
 /// Latitude cosine + elevation lapse rate, scaled by planet params.
@@ -47,14 +58,13 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
         * (season_phase * 2.0 * PI).cos();
 
     let jitter_fbm = Fbm::<Perlin>::new(seed.wrapping_add(20));
-    let jitter_by_x: Vec<f64> = (0..width).map(|x| lat_jitter(x, width, &jitter_fbm)).collect();
 
     let data = (0..width * height)
         .map(|idx| {
             let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let jitter = jitter_by_x[x];
+            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
             let shifted_lat = (abs_lat - season_offset + jitter).abs().clamp(0.0, 1.0);
             let lat_shape = (shifted_lat * std::f64::consts::FRAC_PI_2).cos();
             let lat_temp = params.temp_baseline * (1.0 - params.temp_gradient * (1.0 - lat_shape));
@@ -276,14 +286,13 @@ pub fn generate_precipitation(
     // and high altitudes independently of the circulation band factor.
     // Range: 0.3 (arctic) → 1.0 (tropical), so even the coldest cells get some snowfall.
     let jitter_fbm = Fbm::<Perlin>::new(seed.wrapping_add(21));
-    let jitter_by_x: Vec<f64> = (0..width).map(|x| lat_jitter(x, width, &jitter_fbm)).collect();
 
     let data = (0..n)
         .map(|idx| {
             let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let jitter = jitter_by_x[x];
+            let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
             let w = westerly_weight(abs_lat + jitter, season_offset);
             let moisture = moisture_west[idx] * w + moisture_east[idx] * (1.0 - w);
             let band = lat_band_factor(abs_lat + jitter, season_offset);
