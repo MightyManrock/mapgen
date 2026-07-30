@@ -94,7 +94,7 @@ impl PlanetGenParams {
             lake_precip_boost: 0.08,
             lake_swing_damp: 0.4,
             shore_mouth_radius: 3,
-            shore_cliff_slope: 0.03,
+            shore_cliff_slope: 0.012,
         }
     }
 }
