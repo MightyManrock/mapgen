@@ -14,7 +14,7 @@ use crate::params::PlanetGenParams;
 /// order — layer order makes the distances deterministic). Returns per-cell
 /// `strength * (1 - d / radius)`, 0.0 beyond `radius` or on non-land.
 /// Source cells themselves get full `strength`.
-fn bfs_falloff(
+pub(crate) fn bfs_falloff(
     sources: &[usize],
     is_ocean: &[bool],
     width: usize,

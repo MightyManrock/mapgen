@@ -7,6 +7,7 @@ mod hydrology;
 mod params;
 mod regions;
 mod render;
+mod shore;
 
 use params::PlanetGenParams;
 
@@ -50,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let green = greening::compute_greening(&hydro.map, &hydro.aquifer_zones, &is_ocean, &temperature, &params);
+    let mouth_influence = shore::compute_mouth_influence(&hydro.map, &is_ocean, &params);
 
     render::save_elevation(&elev, "output/elevation.png")?;
     render::save_temperature(&temperature, "output/temperature.png")?;

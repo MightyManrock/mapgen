@@ -44,6 +44,9 @@ pub struct PlanetGenParams {
     pub lake_halo_dist: usize,
     pub lake_precip_boost: f64,
     pub lake_swing_damp: f64,
+    // Coastline character (render-only)
+    pub shore_mouth_radius: usize,
+    pub shore_cliff_slope: f64,
 }
 
 impl PlanetGenParams {
@@ -90,6 +93,8 @@ impl PlanetGenParams {
             lake_halo_dist: 6,
             lake_precip_boost: 0.08,
             lake_swing_damp: 0.4,
+            shore_mouth_radius: 3,
+            shore_cliff_slope: 0.03,
         }
     }
 }
