@@ -63,6 +63,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render::save_sea_ice(&is_sea_ice, &temperature, params.sea_ice_temp_threshold, WIDTH, HEIGHT, "output/sea_ice.png")?;
     render::save_ocean_currents(WIDTH, HEIGHT, &is_ocean, &params, "output/ocean_currents.png")?;
     render::save_greening(WIDTH, HEIGHT, &is_ocean, &green, "output/greening.png")?;
+    render::save_shore(
+        WIDTH, HEIGHT, &elev, &temperature, &precipitation, &mouth_influence, &is_ocean, &params,
+        "output/shore.png",
+    )?;
     render::save_composite(
         WIDTH, HEIGHT, &hydro.map, &elev, &temperature, &precipitation, &green, &mouth_influence,
         &is_ocean, &is_glacier, &is_sea_ice, &params, "output/composite.png",
@@ -83,6 +87,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "output/composite.markers.json",
     )?;
 
-    println!("Done — 12 layers written to output/");
+    println!("Done — 13 layers written to output/");
     Ok(())
 }

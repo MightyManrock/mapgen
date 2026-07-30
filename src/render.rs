@@ -347,6 +347,59 @@ pub fn save_ocean_currents(
     img.save(path)
 }
 
+/// Debug/verification render: coastal land cells (ocean 4-neighbor) paint
+/// their full-strength beach color with the slope-driven cliff collapse
+/// applied (cliffs fade to plain land grey — "no beach here"); everything
+/// else is silhouette. A 1-cell color-coded coastline for tuning shore
+/// character without squinting at the composite's thin beach band.
+pub fn save_shore(
+    width: usize,
+    height: usize,
+    elevation: &HeatMap,
+    temperature: &HeatMap,
+    precipitation: &HeatMap,
+    mouth_influence: &HeatMap,
+    is_ocean: &[bool],
+    params: &PlanetGenParams,
+    path: &str,
+) -> Result<(), image::ImageError> {
+    const LAND: [u8; 3] = [70, 65, 55];
+    let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
+        let xi = x as usize;
+        let yi = y as usize;
+        let idx = yi * width + xi;
+        if is_ocean[idx] {
+            return Rgb([40, 40, 60]);
+        }
+        let mut coastal = is_ocean[yi * width + (xi + width - 1) % width]
+            || is_ocean[yi * width + (xi + 1) % width];
+        if yi > 0 {
+            coastal = coastal || is_ocean[(yi - 1) * width + xi];
+        }
+        if yi + 1 < height {
+            coastal = coastal || is_ocean[(yi + 1) * width + xi];
+        }
+        if !coastal {
+            return Rgb(LAND);
+        }
+        let nx = (xi as f64 + 0.5) / width as f64;
+        let ny = (yi as f64 + 0.5) / height as f64;
+        let dxs = 1.0 / width as f64;
+        let dys = 1.0 / height as f64;
+        let gx = (elevation.sample(nx + dxs, ny) - elevation.sample(nx - dxs, ny)) / 2.0;
+        let gy = (elevation.sample(nx, ny + dys) - elevation.sample(nx, ny - dys)) / 2.0;
+        let slope = (gx * gx + gy * gy).sqrt();
+        let shore_cliff_t = ((slope / params.shore_cliff_slope) * 2.0 - 1.0).clamp(0.0, 1.0);
+        let beach = shore_beach_color(
+            temperature.data[idx],
+            precipitation.data[idx],
+            mouth_influence.data[idx],
+        );
+        Rgb(lerp_color(beach, LAND, shore_cliff_t))
+    });
+    img.save(path)
+}
+
 /// Debug/verification render: plain land/ocean silhouette with the
 /// freshwater greening intensity overlaid on the green channel.
 pub fn save_greening(
