@@ -326,6 +326,24 @@ pub fn save_ocean_currents(
     img.save(path)
 }
 
+/// Debug/verification render: plain land/ocean silhouette with the
+/// freshwater greening intensity overlaid on the green channel.
+pub fn save_greening(
+    width: usize,
+    height: usize,
+    is_ocean: &[bool],
+    greening: &HeatMap,
+    path: &str,
+) -> Result<(), image::ImageError> {
+    let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
+        let idx = y as usize * width + x as usize;
+        let base: [u8; 3] = if is_ocean[idx] { [40, 40, 60] } else { [70, 65, 55] };
+        let intensity = (greening.data[idx] * 255.0).clamp(0.0, 255.0) as u8;
+        Rgb([base[0], base[1].saturating_add(intensity), base[2]])
+    });
+    img.save(path)
+}
+
 pub const RENDER_SCALE: usize = 3;
 const N_DITHER_LEVELS: usize = 16;
 const N_CONTOURS: usize = 40;
@@ -347,6 +365,7 @@ fn composite_pixel_color(
     elevation: &HeatMap,
     temperature: &HeatMap,
     precipitation: &HeatMap,
+    greening: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -429,7 +448,8 @@ fn composite_pixel_color(
             let land_t = ((elev_t - params.sea_level) / (1.0 - params.sea_level)).clamp(0.0, 1.0);
             let d = bayer_dither(land_t, rx as usize, ry as usize, N_DITHER_LEVELS);
             let temp_t = temperature.sample(nx, ny);
-            let precip_t = precipitation.sample(nx, ny);
+            let precip_t = (precipitation.sample(nx, ny)
+                + greening.sample(nx, ny) * params.greening_strength).min(1.0);
             biome_terrain_color(temp_t, precip_t, d)
         }
     } else {
@@ -437,7 +457,8 @@ fn composite_pixel_color(
         let land_t = ((t - params.sea_level) / (1.0 - params.sea_level)).clamp(0.0, 1.0);
         let d = bayer_dither(land_t, rx as usize, ry as usize, N_DITHER_LEVELS);
         let temp_t = temperature.sample(nx, ny);
-        let precip_t = precipitation.sample(nx, ny);
+        let precip_t = (precipitation.sample(nx, ny)
+            + greening.sample(nx, ny) * params.greening_strength).min(1.0);
         biome_terrain_color(temp_t, precip_t, d)
     };
     let nx_r = (rx as usize + 1) as f64 / render_width as f64;
@@ -463,6 +484,7 @@ pub fn save_composite(
     elevation: &HeatMap,
     temperature: &HeatMap,
     precipitation: &HeatMap,
+    greening: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -473,8 +495,8 @@ pub fn save_composite(
     let render_height = height * RENDER_SCALE;
     let img = ImageBuffer::from_fn(render_width as u32, render_height as u32, |rx, ry| {
         composite_pixel_color(
-            rx, ry, width, height, hydro_map, elevation, temperature, precipitation, is_ocean,
-            is_glacier, is_sea_ice, params,
+            rx, ry, width, height, hydro_map, elevation, temperature, precipitation, greening,
+            is_ocean, is_glacier, is_sea_ice, params,
         )
     });
     img.save(path)
@@ -490,6 +512,7 @@ pub fn save_regions(
     elevation: &HeatMap,
     temperature: &HeatMap,
     precipitation: &HeatMap,
+    greening: &HeatMap,
     is_ocean: &[bool],
     is_glacier: &[bool],
     is_sea_ice: &[bool],
@@ -522,8 +545,8 @@ pub fn save_regions(
             Rgb([220u8, 30, 30])
         } else {
             composite_pixel_color(
-                rx, ry, width, height, hydro_map, elevation, temperature, precipitation, is_ocean,
-                is_glacier, is_sea_ice, params,
+                rx, ry, width, height, hydro_map, elevation, temperature, precipitation, greening,
+                is_ocean, is_glacier, is_sea_ice, params,
             )
         }
     });
