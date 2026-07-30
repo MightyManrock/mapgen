@@ -47,6 +47,8 @@ pub struct PlanetGenParams {
     // Coastline character (render-only)
     pub shore_mouth_radius: usize,
     pub shore_cliff_slope: f64,
+    // Region polygon export
+    pub polygon_simplify_epsilon: f64,
 }
 
 impl PlanetGenParams {
@@ -95,6 +97,7 @@ impl PlanetGenParams {
             lake_swing_damp: 0.4,
             shore_mouth_radius: 3,
             shore_cliff_slope: 0.012,
+            polygon_simplify_epsilon: 1.2,
         }
     }
 }

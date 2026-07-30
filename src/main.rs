@@ -5,6 +5,7 @@ mod greening;
 mod heatmap;
 mod hydrology;
 mod params;
+mod polygons;
 mod regions;
 mod render;
 mod shore;
