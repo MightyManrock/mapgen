@@ -402,6 +402,126 @@ pub fn generate_diurnal_swing(temperature: &HeatMap, aridity: &HeatMap, params: 
     HeatMap { width: temperature.width, height: temperature.height, data }
 }
 
+/// Per-cell lake-effect halo strength in [0, 1]: 1.0 adjacent to a large
+/// lake, falling off linearly to 0.0 at `lake_halo_dist`, 0.0 everywhere
+/// else (including small lakes — a pond doesn't moderate its shoreline's
+/// climate; `lake_effect_min_size` sets the cutoff in connected lake cells).
+///
+/// This is the one-way lake→climate pass: hydrology consumes the *base*
+/// precipitation, then large lakes found in its output feed this halo,
+/// which adjusts the precipitation/diurnal-swing fields every downstream
+/// consumer (aridity, region detection, renders) sees. No feedback into
+/// hydrology itself.
+pub fn compute_lake_halo(hydro_map: &HeatMap, is_ocean: &[bool], params: &PlanetGenParams) -> Vec<f64> {
+    use std::collections::VecDeque;
+
+    let width = hydro_map.width;
+    let height = hydro_map.height;
+    let n = width * height;
+    // Lake cells occupy (0.3, 0.5] in the hydrology encoding (see
+    // hydrology.rs Phase 7); ocean is (0.5, 1.0], rivers (0.0, 0.3].
+    let is_lake: Vec<bool> = (0..n)
+        .map(|i| !is_ocean[i] && hydro_map.data[i] > 0.3 && hydro_map.data[i] <= 0.5)
+        .collect();
+
+    // Wrap-aware 4-neighborhood, fixed W/E/N/S order (x wraps, y clamps).
+    let neighbors = |x: usize, y: usize| {
+        let mut out = [(0usize, 0usize); 4];
+        let mut count = 0;
+        out[count] = ((x + width - 1) % width, y);
+        count += 1;
+        out[count] = ((x + 1) % width, y);
+        count += 1;
+        if y > 0 {
+            out[count] = (x, y - 1);
+            count += 1;
+        }
+        if y + 1 < height {
+            out[count] = (x, y + 1);
+            count += 1;
+        }
+        (out, count)
+    };
+
+    // Connected components over lake cells, seeded in index order.
+    let mut comp = vec![u32::MAX; n];
+    let mut comp_sizes = Vec::new();
+    for start in 0..n {
+        if !is_lake[start] || comp[start] != u32::MAX {
+            continue;
+        }
+        let id = comp_sizes.len() as u32;
+        let mut size = 0usize;
+        let mut queue = VecDeque::from([start]);
+        comp[start] = id;
+        while let Some(idx) = queue.pop_front() {
+            size += 1;
+            let (nbrs, count) = neighbors(idx % width, idx / width);
+            for &(nx, ny) in &nbrs[..count] {
+                let nidx = ny * width + nx;
+                if is_lake[nidx] && comp[nidx] == u32::MAX {
+                    comp[nidx] = id;
+                    queue.push_back(nidx);
+                }
+            }
+        }
+        comp_sizes.push(size);
+    }
+
+    // Multi-source BFS outward from large-lake cells over land only.
+    let mut dist = vec![usize::MAX; n];
+    let mut queue = VecDeque::new();
+    for idx in 0..n {
+        if comp[idx] != u32::MAX && comp_sizes[comp[idx] as usize] >= params.lake_effect_min_size {
+            dist[idx] = 0;
+            queue.push_back(idx);
+        }
+    }
+    while let Some(idx) = queue.pop_front() {
+        let d = dist[idx];
+        if d >= params.lake_halo_dist {
+            continue;
+        }
+        let (nbrs, count) = neighbors(idx % width, idx / width);
+        for &(nx, ny) in &nbrs[..count] {
+            let nidx = ny * width + nx;
+            if !is_ocean[nidx] && dist[nidx] == usize::MAX {
+                dist[nidx] = d + 1;
+                queue.push_back(nidx);
+            }
+        }
+    }
+
+    dist.into_iter()
+        .map(|d| {
+            if d == usize::MAX || d == 0 {
+                0.0 // unreachable, or the lake cell itself (already water)
+            } else {
+                1.0 - d as f64 / params.lake_halo_dist as f64
+            }
+        })
+        .collect()
+}
+
+/// Lake-effect precipitation: large lakes add moisture to their shores.
+pub fn apply_lake_precip(precipitation: &HeatMap, halo: &[f64], params: &PlanetGenParams) -> HeatMap {
+    let data = precipitation.data.iter()
+        .zip(halo)
+        .map(|(&p, &h)| (p + h * params.lake_precip_boost).clamp(0.0, 1.0))
+        .collect();
+    HeatMap { width: precipitation.width, height: precipitation.height, data }
+}
+
+/// Lake-effect temperature moderation: large water bodies damp the
+/// day/night swing on their shores (milder extremes, not a shifted mean).
+pub fn apply_lake_swing(swing: &HeatMap, halo: &[f64], params: &PlanetGenParams) -> HeatMap {
+    let data = swing.data.iter()
+        .zip(halo)
+        .map(|(&s, &h)| s * (1.0 - h * params.lake_swing_damp))
+        .collect();
+    HeatMap { width: swing.width, height: swing.height, data }
+}
+
 /// Returns a bool mask: true where a land cell is glaciated.
 pub fn generate_glacier(temperature: &HeatMap, is_ocean: &[bool], threshold: f64) -> Vec<bool> {
     (0..temperature.data.len())

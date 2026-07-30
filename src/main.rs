@@ -27,8 +27,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let precipitation =
         climate::generate_precipitation(&elev, &is_ocean, &temperature, &is_sea_ice, &params, 0.0, SEED);
     let is_glacier = climate::generate_glacier(&temperature, &is_ocean, params.glacier_temp_threshold);
+
+    // Hydrology consumes the base precipitation; large lakes in its output
+    // then feed a one-way climate adjustment (no feedback into hydrology).
+    let hydro = hydrology::generate_hydrology(&elev, &is_ocean, &precipitation, &is_glacier, &params);
+    let lake_halo = climate::compute_lake_halo(&hydro.map, &is_ocean, &params);
+    let precipitation = climate::apply_lake_precip(&precipitation, &lake_halo, &params);
+
     let aridity = climate::generate_aridity(&temperature, &precipitation, params.et_factor);
-    let diurnal_swing = climate::generate_diurnal_swing(&temperature, &aridity, &params);
+    let diurnal_swing = climate::apply_lake_swing(
+        &climate::generate_diurnal_swing(&temperature, &aridity, &params),
+        &lake_halo,
+        &params,
+    );
 
     let (region_map, regions) = regions::detect_regions(
         &elev, &temperature, &diurnal_swing, &precipitation, &aridity,
@@ -36,8 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         params.land_threshold, params.ocean_threshold, params.region_min_size,
         params.island_coast_dist, params.island_arch_dist, params.lon_weight,
     );
-
-    let hydro = hydrology::generate_hydrology(&elev, &is_ocean, &precipitation, &is_glacier, &params);
 
     render::save_elevation(&elev, "output/elevation.png")?;
     render::save_temperature(&temperature, "output/temperature.png")?;
