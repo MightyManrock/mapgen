@@ -45,6 +45,43 @@ struct Marker {
 }
 
 #[derive(Serialize)]
+struct DrawLayer {
+    id: &'static str,
+    name: &'static str,
+    visible: bool,
+    locked: bool,
+}
+
+#[derive(Serialize)]
+struct DrawingStyle {
+    #[serde(rename = "strokeColor")]
+    stroke_color: String,
+    #[serde(rename = "strokeWidth")]
+    stroke_width: f64,
+    #[serde(rename = "fillColor")]
+    fill_color: String,
+    #[serde(rename = "fillOpacity")]
+    fill_opacity: f64,
+}
+
+#[derive(Serialize)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Serialize)]
+struct Drawing {
+    id: String,
+    #[serde(rename = "layerId")]
+    layer_id: &'static str,
+    kind: &'static str,
+    visible: bool,
+    polygon: Vec<Point>,
+    style: DrawingStyle,
+}
+
+#[derive(Serialize)]
 struct MarkersFile {
     size: Size,
     layers: Vec<Layer>,
@@ -60,8 +97,8 @@ struct MarkersFile {
     #[serde(rename = "panClamp")]
     pan_clamp: bool,
     #[serde(rename = "drawLayers")]
-    draw_layers: Vec<()>,
-    drawings: Vec<()>,
+    draw_layers: Vec<DrawLayer>,
+    drawings: Vec<Drawing>,
     #[serde(rename = "secondScreen")]
     second_screen: SecondScreen,
     #[serde(rename = "textLayers")]
@@ -82,6 +119,7 @@ pub fn save_markers_json(
     params: &PlanetGenParams,
     image_filename: &str,
     regions: &[crate::regions::Region],
+    polygons: &[crate::polygons::RegionPolygons],
     grid_width: usize,
     grid_height: usize,
     path: &str,
@@ -105,6 +143,40 @@ pub fn save_markers_json(
             tooltip: r.character(),
         })
         .collect();
+
+    // Region boundary polygons, one drawing per traced loop, colored by
+    // the region's climate via the same biome interpolation the terrain
+    // renderer uses (the overlay doubles as a biome legend).
+    let mut drawings: Vec<Drawing> = Vec::new();
+    for rp in polygons {
+        let region = regions
+            .iter()
+            .find(|r| r.id == rp.region_id)
+            .expect("polygon region id always comes from the regions list");
+        let [cr, cg, cb] = crate::render::biome_base_color(region.mean_temp, region.mean_precip);
+        let color = format!("#{:02x}{:02x}{:02x}", cr, cg, cb);
+        for (i, lp) in rp.loops.iter().enumerate() {
+            drawings.push(Drawing {
+                id: format!("draw_region_{}_{}", rp.region_id, i),
+                layer_id: "draw_regions",
+                kind: "polygon",
+                visible: true,
+                polygon: lp
+                    .iter()
+                    .map(|&(cx, cy)| Point {
+                        x: cx / grid_width as f64,
+                        y: cy / grid_height as f64,
+                    })
+                    .collect(),
+                style: DrawingStyle {
+                    stroke_color: color.clone(),
+                    stroke_width: 2.0,
+                    fill_color: color.clone(),
+                    fill_opacity: 0.15,
+                },
+            });
+        }
+    }
 
     let data = MarkersFile {
         size: Size {
@@ -130,8 +202,13 @@ pub fn save_markers_json(
         pin_size_overrides: BTreeMap::new(),
         grids: vec![],
         pan_clamp: true,
-        draw_layers: vec![],
-        drawings: vec![],
+        draw_layers: vec![DrawLayer {
+            id: "draw_regions",
+            name: "Regions",
+            visible: true,
+            locked: false,
+        }],
+        drawings,
         second_screen: SecondScreen {},
         text_layers: vec![],
     };

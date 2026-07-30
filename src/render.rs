@@ -147,6 +147,21 @@ fn shore_beach_color(temp_t: f64, precip_t: f64, mouth_t: f64) -> [u8; 3] {
     lerp_color(beach, DELTA_MUD, mouth_t * 0.8)
 }
 
+/// Climate-space biome base color: bilinear interpolation over the four
+/// biome corner colors by (temperature, precipitation). Shared by the
+/// terrain elevation ramp and the region-polygon export (so exported
+/// region colors match the map palette).
+pub(crate) fn biome_base_color(temp_t: f64, precip_t: f64) -> [u8; 3] {
+    const COLD_DRY: [u8; 3] = [150, 150, 120]; // tundra
+    const COLD_WET: [u8; 3] = [40, 90, 70];    // taiga / boreal forest
+    const HOT_DRY: [u8; 3]  = [210, 170, 100]; // desert
+    const HOT_WET: [u8; 3]  = [30, 110, 40];   // tropical rainforest
+
+    let low  = lerp_color(COLD_DRY, COLD_WET, precip_t);
+    let high = lerp_color(HOT_DRY, HOT_WET, precip_t);
+    lerp_color(low, high, temp_t)
+}
+
 /// Land color from climate-space biome interpolation, elevation-shaded.
 /// `temp_t`/`precip_t` are the raw (undithered) normalized [0,1] climate
 /// values at this pixel — continuous by construction, no dithering needed
@@ -156,14 +171,7 @@ fn shore_beach_color(temp_t: f64, precip_t: f64, mouth_t: f64) -> [u8; 3] {
 /// from `shore_beach_color`; `shore_cliff_t` collapses that stop into the
 /// biome color as coastal slope rises (steep coast = no beach band).
 fn biome_terrain_color(temp_t: f64, precip_t: f64, land_t: f64, beach: [u8; 3], shore_cliff_t: f64) -> [u8; 3] {
-    const COLD_DRY: [u8; 3] = [150, 150, 120]; // tundra
-    const COLD_WET: [u8; 3] = [40, 90, 70];    // taiga / boreal forest
-    const HOT_DRY: [u8; 3]  = [210, 170, 100]; // desert
-    const HOT_WET: [u8; 3]  = [30, 110, 40];   // tropical rainforest
-
-    let low  = lerp_color(COLD_DRY, COLD_WET, precip_t);
-    let high = lerp_color(HOT_DRY, HOT_WET, precip_t);
-    let base = lerp_color(low, high, temp_t);
+    let base = biome_base_color(temp_t, precip_t);
     let base_dark = [
         (base[0] as f64 * 0.75) as u8,
         (base[1] as f64 * 0.75) as u8,

@@ -51,6 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         params.island_coast_dist, params.island_arch_dist, params.lon_weight,
     );
 
+    let region_polys = polygons::extract_region_polygons(
+        &region_map, &regions, WIDTH, HEIGHT, params.polygon_simplify_epsilon,
+    );
+
     let green = greening::compute_greening(&hydro.map, &hydro.aquifer_zones, &is_ocean, &temperature, &params);
     let mouth_influence = shore::compute_mouth_influence(&hydro.map, &is_ocean, &params);
 
@@ -83,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &params,
         "composite.png",
         &regions,
+        &region_polys,
         WIDTH,
         HEIGHT,
         "output/composite.markers.json",
