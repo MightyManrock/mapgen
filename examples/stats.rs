@@ -36,6 +36,13 @@ fn baseline_params() -> PlanetGenParams {
     p.lapse_factor = 0.3;
     p.slope_threshold = 0.015;
     p.max_lake_fill = 0.04;
+    // `land_decay` 0.985 was the *per-cell* figure; under the new per-1000-km
+    // units that same number means almost no decay at all. 0.68 is its
+    // equivalent (0.985^(1000/39.1)), reproducing the old rate at the equator.
+    // Poleward of that the new code is deliberately wetter — the per-km fix
+    // cannot be turned off by parameters.
+    p.land_decay = 0.68;
+    p.land_recycle_floor = 0.0;
     p
 }
 

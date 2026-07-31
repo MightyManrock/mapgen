@@ -297,6 +297,97 @@ pub fn apply_ocean_currents(temperature: &HeatMap, is_ocean: &[bool], params: &P
     HeatMap { width, height, data }
 }
 
+/// East-west width of one cell, in km, at row `y`.
+///
+/// The grid is equirectangular, so a cell's ground width shrinks with
+/// `cos(lat)` — 39.1 km at the equator against 22.4 km at 55° for a
+/// 1024-wide Earth-sized planet. Anything applied "per cell" is therefore
+/// applied over a varying physical distance, which is what made a fixed
+/// per-cell moisture decay latitude-biased.
+///
+/// Derived from `params.radius_km` rather than a hardcoded circumference, so a
+/// differently-sized planet gets correct distances (same basis as
+/// `export.rs`'s metres-per-pixel).
+fn km_per_cell(params: &PlanetGenParams, width: usize, y: usize, height: usize) -> f64 {
+    let lat = (y as f64 / height as f64 - 0.5) * PI;
+    std::f64::consts::TAU * params.radius_km * lat.cos() / width as f64
+}
+
+/// Reference distance for `land_decay`: it is the fraction of moisture
+/// retained per this many km of overland travel.
+const DECAY_REFERENCE_KM: f64 = 1000.0;
+
+/// One double-pass row sweep of moisture advection over the whole grid.
+///
+/// `eastward` selects the wind direction: `true` is the westerly sweep (wind
+/// from the west, moisture carried east), `false` the easterly. The two
+/// differ *only* in scan order and which neighbour is upwind — the physics
+/// must stay identical between them, which is why this is one function rather
+/// than two near-identical loops.
+///
+/// Each row is scanned twice. Carry from the end of the first pass seeds the
+/// second, so the cell at the antimeridian correctly inherits moisture that
+/// wrapped around the globe; only the second pass is recorded.
+fn moisture_sweep(
+    elevation: &HeatMap,
+    is_ocean: &[bool],
+    is_sea_ice: &[bool],
+    temperature: &HeatMap,
+    params: &PlanetGenParams,
+    eastward: bool,
+) -> Vec<f64> {
+    let width = elevation.width;
+    let height = elevation.height;
+    let mut out = vec![0.0f64; width * height];
+
+    for y in 0..height {
+        // Decay depends only on how far a cell spans, so it is fixed per row.
+        // Raising `land_decay` to (cell width / reference) converts a
+        // per-distance retention into a per-cell one, making the result
+        // independent of both latitude and render resolution.
+        let decay = params
+            .land_decay
+            .powf(km_per_cell(params, width, y, height) / DECAY_REFERENCE_KM);
+
+        let mut carry = 0.0f64;
+        for pass in 0..(width * 2) {
+            let step = pass % width;
+            let x = if eastward { step } else { (width - 1) - step };
+            let idx = y * width + x;
+            if is_ocean[idx] {
+                // Sea ice dramatically reduces evaporation; open ocean = full moisture.
+                carry = if is_sea_ice[idx] { params.sea_ice_evap_factor } else { params.precip_moisture };
+            } else {
+                let upwind_x = if eastward { (x + width - 1) % width } else { (x + 1) % width };
+                let raw_gain = elevation.data[idx] - elevation.data[y * width + upwind_x];
+                let elev_gain = (raw_gain - params.slope_threshold).max(0.0);
+
+                // Land returns moisture to the airmass (evapotranspiration), so
+                // the parcel relaxes toward what the local surface can sustain
+                // rather than toward zero. Without this an airmass crossing a
+                // continent asymptotes to nothing, which is why interiors
+                // generated as desert regardless of climate.
+                //
+                // Relaxation rather than an additive term: `carry` cannot rise
+                // above `equilibrium`, so no cap is needed to keep an
+                // 11,000 km fetch stable. Scaled by raw temperature — not
+                // `moisture_capacity`, which floors at 0.3 — so hot and cold
+                // land differentiate strongly (rainforest vs. glaciated waste).
+                let equilibrium = params.land_recycle_floor * temperature.data[idx];
+                carry = equilibrium + (carry - equilibrium) * decay;
+
+                // Rain shadow still subtracts afterward, so orographic
+                // behaviour is unchanged by the recycling.
+                carry = (carry - elev_gain * params.slope_loss).max(0.0);
+            }
+            if pass >= width {
+                out[idx] = carry;
+            }
+        }
+    }
+    out
+}
+
 /// Atmospheric band function + row-sweep moisture advection + rain shadow.
 ///
 /// Two moisture fields are accumulated via double-pass row sweeps (one for
@@ -329,53 +420,8 @@ pub fn generate_precipitation(
     // near solstice.)
     let subsolar = subsolar_lat(params.axial_tilt, season_phase, 0.5);
 
-    let mut moisture_west = vec![0.0f64; n];
-    let mut moisture_east = vec![0.0f64; n];
-
-    // Westerly sweep: wind from west, moisture moves east.
-    // Scan x=0→width-1 twice; second pass starts with carry from the end of
-    // the first, so x=0 correctly inherits moisture wrapping from x=width-1.
-    for y in 0..height {
-        let mut carry = 0.0f64;
-        for pass_x in 0..(width * 2) {
-            let x = pass_x % width;
-            let idx = y * width + x;
-            if is_ocean[idx] {
-                // Sea ice dramatically reduces evaporation; open ocean = full moisture.
-                carry = if is_sea_ice[idx] { params.sea_ice_evap_factor } else { params.precip_moisture };
-            } else {
-                let upwind_x = (x + width - 1) % width;
-                let raw_gain = elevation.data[idx] - elevation.data[y * width + upwind_x];
-                let elev_gain = (raw_gain - params.slope_threshold).max(0.0);
-                carry = (carry * params.land_decay - elev_gain * params.slope_loss).max(0.0);
-            }
-            if pass_x >= width {
-                moisture_west[idx] = carry;
-            }
-        }
-    }
-
-    // Easterly sweep: wind from east, moisture moves west.
-    // Scan x=width-1→0 twice; second pass starts with carry from x=0
-    // so x=width-1 correctly inherits moisture wrapping from x=0.
-    for y in 0..height {
-        let mut carry = 0.0f64;
-        for pass_i in 0..(width * 2) {
-            let x = (width - 1) - (pass_i % width);
-            let idx = y * width + x;
-            if is_ocean[idx] {
-                carry = if is_sea_ice[idx] { params.sea_ice_evap_factor } else { params.precip_moisture };
-            } else {
-                let upwind_x = (x + 1) % width;
-                let raw_gain = elevation.data[idx] - elevation.data[y * width + upwind_x];
-                let elev_gain = (raw_gain - params.slope_threshold).max(0.0);
-                carry = (carry * params.land_decay - elev_gain * params.slope_loss).max(0.0);
-            }
-            if pass_i >= width {
-                moisture_east[idx] = carry;
-            }
-        }
-    }
+    let moisture_west = moisture_sweep(elevation, is_ocean, is_sea_ice, temperature, params, true);
+    let moisture_east = moisture_sweep(elevation, is_ocean, is_sea_ice, temperature, params, false);
 
     // Cold air holds less moisture: this dampens precipitation at high latitudes
     // and high altitudes independently of the circulation band factor.
@@ -711,6 +757,168 @@ mod tests {
 
         let (a, b) = (row_mean(&shelf, y), row_mean(&trench, y));
         assert!((a - b).abs() < 1e-9, "ocean depth changed temperature: shelf {a}, trench {b}");
+    }
+
+    /// Build a world that is ocean for the first `ocean_cols` columns of every
+    /// row and land thereafter, at uniform elevation and temperature. Lets a
+    /// sweep be observed as a pure function of distance inland.
+    fn coast_world(
+        width: usize,
+        height: usize,
+        ocean_cols: usize,
+        temp: f64,
+        sea_level: f64,
+    ) -> (HeatMap, Vec<bool>, Vec<bool>, HeatMap) {
+        let elev = HeatMap { width, height, data: vec![sea_level; width * height] };
+        let is_ocean: Vec<bool> = (0..width * height).map(|i| i % width < ocean_cols).collect();
+        let is_sea_ice = vec![false; width * height];
+        let temperature = HeatMap { width, height, data: vec![temp; width * height] };
+        (elev, is_ocean, is_sea_ice, temperature)
+    }
+
+    #[test]
+    fn km_per_cell_scales_with_latitude_and_radius() {
+        let params = PlanetGenParams::earth_like();
+        let h = 180;
+        let equator = km_per_cell(&params, 360, h / 2, h);
+        // Rows span 180 deg pole to pole, so 60 deg of latitude is h/3 rows.
+        let sixty = km_per_cell(&params, 360, h / 2 + h / 3, h);
+
+        // cos(60 deg) = 0.5.
+        assert!(
+            (sixty / equator - 0.5).abs() < 0.02,
+            "expected 60 deg cells at half equatorial width, got ratio {}",
+            sixty / equator
+        );
+
+        let mut bigger = PlanetGenParams::earth_like();
+        bigger.radius_km *= 2.0;
+        assert!(
+            (km_per_cell(&bigger, 360, h / 2, h) / equator - 2.0).abs() < 1e-9,
+            "cell width should scale linearly with planet radius"
+        );
+    }
+
+    /// Regression for the latitude bias: moisture must decay at the same rate
+    /// per *kilometre* everywhere. Under the old per-cell decay the retention
+    /// per km differed by ~1.75x between the equator and 55 deg, drying
+    /// midlatitude interiors for purely geometric reasons.
+    #[test]
+    fn decay_rate_per_km_is_latitude_independent() {
+        let params = PlanetGenParams::earth_like();
+        let h = 180;
+        let (w, y_eq, y_60) = (360, h / 2, h / 2 + h / 3);
+
+        let km_eq = km_per_cell(&params, w, y_eq, h);
+        let km_60 = km_per_cell(&params, w, y_60, h);
+        let per_cell = |km: f64| params.land_decay.powf(km / DECAY_REFERENCE_KM);
+
+        // Retention over one kilometre, derived from each row's per-cell factor.
+        let per_km_eq = per_cell(km_eq).powf(1.0 / km_eq);
+        let per_km_60 = per_cell(km_60).powf(1.0 / km_60);
+        assert!(
+            (per_km_eq - per_km_60).abs() < 1e-12,
+            "per-km retention differs by latitude: {per_km_eq} vs {per_km_60}"
+        );
+
+        // And the old model genuinely failed this, so the test has teeth.
+        let old_per_km_eq = 0.985f64.powf(1.0 / km_eq);
+        let old_per_km_60 = 0.985f64.powf(1.0 / km_60);
+        assert!(
+            (old_per_km_eq - old_per_km_60).abs() > 1e-4,
+            "per-cell decay should have been latitude-dependent"
+        );
+    }
+
+    /// Regression: climate must not depend on render resolution. Under per-cell
+    /// decay, doubling the width halved the km per cell and dried the planet.
+    #[test]
+    fn interior_moisture_is_resolution_independent() {
+        let params = PlanetGenParams::earth_like();
+
+        // Same geometry (half ocean, half land) at two resolutions, sampled at
+        // the same *fractional* position inland.
+        let sample = |width: usize| {
+            let height = width / 2;
+            let (elev, is_ocean, ice, temp) =
+                coast_world(width, height, width / 2, 0.8, params.sea_level);
+            let m = moisture_sweep(&elev, &is_ocean, &ice, &temp, &params, true);
+            let y = height / 2;
+            m[y * width + width * 7 / 8] // 75% of the way across the landmass
+        };
+
+        let (lo, hi) = (sample(256), sample(512));
+        assert!(
+            (lo - hi).abs() < 0.02,
+            "interior moisture should not depend on resolution: {lo} at 256 vs {hi} at 512"
+        );
+    }
+
+    /// The recycling equilibrium is a floor: a long overland fetch converges to
+    /// it rather than to zero. This is the fix for continental interiors.
+    #[test]
+    fn recycling_floor_is_a_floor() {
+        let params = PlanetGenParams::earth_like();
+        let (w, h, temp) = (512, 256, 0.8);
+        let (elev, is_ocean, ice, temperature) = coast_world(w, h, 8, temp, params.sea_level);
+
+        let m = moisture_sweep(&elev, &is_ocean, &ice, &temperature, &params, true);
+        let deep = m[(h / 2) * w + (w - 1)]; // far end of a very long fetch
+        let expected = params.land_recycle_floor * temp;
+
+        assert!(
+            (deep - expected).abs() < 0.01,
+            "deep interior should converge to the floor {expected}, got {deep}"
+        );
+        // Without recycling the same fetch collapses to nothing.
+        let mut dry = PlanetGenParams::earth_like();
+        dry.land_recycle_floor = 0.0;
+        let m0 = moisture_sweep(&elev, &is_ocean, &ice, &temperature, &dry, true);
+        assert!(
+            m0[(h / 2) * w + (w - 1)] < 0.01,
+            "without recycling the interior should decay to ~0"
+        );
+    }
+
+    /// The equilibrium is also a ceiling — the property that makes relaxation
+    /// safe without a separate cap. An airmass drier than the floor rises
+    /// toward it and stops.
+    #[test]
+    fn recycling_floor_is_also_a_ceiling() {
+        let mut params = PlanetGenParams::earth_like();
+        // Sea ice supplies a parcel far drier than the recycling equilibrium.
+        params.sea_ice_evap_factor = 0.01;
+        let (w, h, temp) = (512, 256, 0.8);
+        let (elev, is_ocean, _, temperature) = coast_world(w, h, 8, temp, params.sea_level);
+        let ice = vec![true; w * h];
+
+        let m = moisture_sweep(&elev, &is_ocean, &ice, &temperature, &params, true);
+        let ceiling = params.land_recycle_floor * temp;
+        let row = h / 2;
+        for x in 8..w {
+            let v = m[row * w + x];
+            assert!(
+                v <= ceiling + 1e-9,
+                "moisture {v} at x={x} exceeded the equilibrium {ceiling}"
+            );
+        }
+        // And it did rise toward it, rather than staying at the parcel's value.
+        assert!(m[row * w + (w - 1)] > 0.9 * ceiling, "moisture should approach the floor");
+    }
+
+    /// Cold land does not evapotranspire, so glaciated interiors must stay dry
+    /// even with recycling enabled.
+    #[test]
+    fn cold_land_does_not_recycle() {
+        let params = PlanetGenParams::earth_like();
+        let (w, h) = (512, 256);
+        let (elev, is_ocean, ice, temperature) = coast_world(w, h, 8, 0.0, params.sea_level);
+
+        let m = moisture_sweep(&elev, &is_ocean, &ice, &temperature, &params, true);
+        assert!(
+            m[(h / 2) * w + (w - 1)] < 0.01,
+            "freezing interior should not be sustained by recycling"
+        );
     }
 
     /// Regression: the current bias came from a per-row coastline search with

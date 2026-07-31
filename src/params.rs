@@ -21,7 +21,17 @@ pub struct PlanetGenParams {
     pub lapse_factor: f64,
     pub sea_ice_evap_factor: f64,
     pub precip_moisture: f64,
+    /// Fraction of airmass moisture retained per 1000 km of overland travel.
+    ///
+    /// Per *distance*, not per cell: a cell spans `39.1 * cos(lat)` km, so a
+    /// per-cell figure decays moisture ~1.75x faster per km at 55 deg than at
+    /// the equator, and changes meaning with render resolution.
     pub land_decay: f64,
+    /// Moisture level, as a fraction of local temperature, that land sustains
+    /// through evapotranspiration. The airmass relaxes toward
+    /// `land_recycle_floor * temperature` instead of toward zero, so
+    /// continental interiors stay habitable. 0.0 disables recycling.
+    pub land_recycle_floor: f64,
     pub slope_threshold: f64,
     pub slope_loss: f64,
     pub base_arid: f64,
@@ -85,7 +95,11 @@ impl PlanetGenParams {
             lapse_factor: 0.7,
             sea_ice_evap_factor: 0.25,
             precip_moisture: 1.0,
-            land_decay: 0.985,
+            // Per 1000 km. 0.985^(1000/39.1) — i.e. exactly reproduces the old
+            // per-cell 0.985 at the equator, where a cell is 39.1 km wide.
+            // Everything poleward of that gets wetter, which was the bug.
+            land_decay: 0.68,
+            land_recycle_floor: 0.25,
             // Scaled by the 1.539x land-relief factor from normalization, to
             // preserve prior behavior under the new fixed scale. NOTE this
             // keeps the rain shadow inert: post-normalization p95 per-cell
