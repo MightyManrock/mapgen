@@ -37,11 +37,35 @@ const JITTER_LAT_SCALE: f64 = 0.3;
 
 fn lat_jitter(x: usize, y: usize, width: usize, height: usize, fbm: &Fbm<Perlin>) -> f64 {
     let lon = x as f64 / width as f64 * std::f64::consts::TAU;
-    let signed_lat = (y as f64 / height as f64 - 0.5) * PI;
+    // Radians, unlike `signed_lat`'s normalized [-1, 1] — this feeds the noise
+    // sampling cylinder, not a latitude comparison.
+    let lat_radians = (y as f64 / height as f64 - 0.5) * PI;
     let r = JITTER_WAVELENGTH / std::f64::consts::TAU;
     let sx = r * lon.cos();
     let sy = r * lon.sin();
-    fbm.get([sx, sy, signed_lat * JITTER_LAT_SCALE]) * JITTER_AMPLITUDE
+    fbm.get([sx, sy, lat_radians * JITTER_LAT_SCALE]) * JITTER_AMPLITUDE
+}
+
+/// Signed latitude of row `y`, normalized so -1.0 is the y=0 pole and +1.0 the
+/// y=height-1 pole.
+///
+/// The sign convention follows `generate_elevation`, which maps y=0 to latitude
+/// -PI/2 — so **high y is north**. Everything seasonal depends on getting this
+/// right: at `season_phase` 0 the subsolar latitude is positive and must warm
+/// the high-y hemisphere (northern summer).
+fn signed_lat(y: usize, height: usize) -> f64 {
+    (y as f64 / height as f64 - 0.5) * 2.0
+}
+
+/// Subsolar latitude for a season, in the same normalized units as
+/// `signed_lat` (1.0 == pole). Positive = sun overhead in the northern
+/// hemisphere. `phase` is a fraction of the year: 0 = northern summer
+/// solstice, 0.25 = equinox, 0.5 = southern summer solstice.
+///
+/// `amplitude_scale` exists because temperature and precipitation want
+/// different excursions from the same tilt — see the call sites.
+fn subsolar_lat(axial_tilt: f64, phase: f64, amplitude_scale: f64) -> f64 {
+    (axial_tilt / 90.0) * amplitude_scale * (phase * std::f64::consts::TAU).cos()
 }
 
 /// Latitude cosine + elevation lapse rate, scaled by planet params.
@@ -52,10 +76,11 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
     let width = elevation.width;
     let height = elevation.height;
 
-    // Axial tilt shifts the insolation peak north/south with the season.
-    // Convention matches generate_precipitation: phase 0 = northern summer.
-    let season_offset = (params.axial_tilt.to_radians() * 0.5 / (PI / 2.0))
-        * (season_phase * 2.0 * PI).cos();
+    // Full axial tilt: the subsolar point genuinely swings the whole ±tilt
+    // range. (`generate_precipitation` halves it as a Hadley-cell migration
+    // proxy — appropriate for wind belts, but that factor was previously
+    // copied here, where it does not belong.)
+    let subsolar = subsolar_lat(params.axial_tilt, season_phase, 1.0);
 
     let jitter_fbm = Fbm::<Perlin>::new(seed.wrapping_add(20));
 
@@ -63,12 +88,20 @@ pub fn generate_temperature(elevation: &HeatMap, params: &PlanetGenParams, seaso
         .map(|idx| {
             let x = idx % width;
             let y = idx / width;
-            let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
             let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
-            let shifted_lat = (abs_lat - season_offset + jitter).abs().clamp(0.0, 1.0);
-            let lat_shape = (shifted_lat * std::f64::consts::FRAC_PI_2).cos();
+            // Distance from the subsolar latitude, in signed space — so one
+            // hemisphere warms while the other cools, rather than both
+            // shifting the same direction as they did against `abs_lat`.
+            let eff_lat = (signed_lat(y, height) - subsolar + jitter).abs().clamp(0.0, 1.0);
+            let lat_shape = (eff_lat * std::f64::consts::FRAC_PI_2).cos();
             let lat_temp = params.temp_baseline * (1.0 - params.temp_gradient * (1.0 - lat_shape));
-            (lat_temp - elevation.data[idx] * params.lapse_factor).clamp(0.0, 1.0)
+            // Lapse from height *above sea level*, not raw elevation. Against
+            // raw elevation, ocean cells were cooled in proportion to their own
+            // depth, making deep trenches read warmer than shallow shelves.
+            let above_sea = ((elevation.data[idx] - params.sea_level).max(0.0)
+                / (1.0 - params.sea_level))
+                * params.lapse_factor;
+            (lat_temp - above_sea).clamp(0.0, 1.0)
         })
         .collect();
 
@@ -228,11 +261,18 @@ pub fn generate_precipitation(
     let width = elevation.width;
     let height = elevation.height;
     let n = width * height;
-    // ITCZ and wind belts migrate with season. Half the tilt angle (in
-    // normalised lat units) is a reasonable proxy for the Hadley cell shift.
-    // Convention: phase 0 = northern summer solstice (cos=1, max northward shift),
-    //             phase π = northern winter solstice (cos=-1, max southward shift).
-    let season_offset = (params.axial_tilt.to_radians() * 0.5 / (PI / 2.0)) * season_phase.cos();
+    // ITCZ and wind belts migrate with season. Half the tilt angle is a
+    // reasonable proxy for the Hadley cell shift — the belts do not track the
+    // subsolar point one-for-one, so unlike `generate_temperature` this keeps
+    // the 0.5 scale.
+    //
+    // `season_phase` is a fraction of the year in both functions: 0 = northern
+    // summer solstice, 0.25 = equinox, 0.5 = southern summer solstice. (This
+    // function previously read it as radians while `generate_temperature` read
+    // it as a fraction — invisible while both were called with 0.0, but at
+    // phase 0.25 temperature sat at equinox while precipitation was still
+    // near solstice.)
+    let subsolar = subsolar_lat(params.axial_tilt, season_phase, 0.5);
 
     let mut moisture_west = vec![0.0f64; n];
     let mut moisture_east = vec![0.0f64; n];
@@ -291,11 +331,14 @@ pub fn generate_precipitation(
         .map(|idx| {
             let x = idx % width;
             let y = idx / width;
-            let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
             let jitter = lat_jitter(x, y, width, height, &jitter_fbm);
-            let w = westerly_weight(abs_lat + jitter, season_offset);
+            // Same signed-space treatment as `generate_temperature`: the belts
+            // migrate into the summer hemisphere rather than toward both poles
+            // at once. Computed once and shared by both band functions.
+            let eff_lat = (signed_lat(y, height) - subsolar + jitter).abs().clamp(0.0, 1.0);
+            let w = westerly_weight(eff_lat);
             let moisture = moisture_west[idx] * w + moisture_east[idx] * (1.0 - w);
-            let band = lat_band_factor(abs_lat + jitter, season_offset);
+            let band = lat_band_factor(eff_lat);
             let moisture_capacity = (0.3 + 0.7 * temperature.data[idx]).clamp(0.3, 1.0);
             (band * (params.base_arid + moisture * (1.0 - params.base_arid)) * moisture_capacity).clamp(0.0, 1.0)
         })
@@ -306,8 +349,10 @@ pub fn generate_precipitation(
 
 /// Latitude precipitation factor based on Earth's general circulation bands.
 /// Returns a [0, 1] multiplier applied before moisture weighting.
-/// `season_offset` shifts all band latitudes (positive = ITCZ migrates north).
-fn lat_band_factor(abs_lat: f64, season_offset: f64) -> f64 {
+///
+/// `eff_lat` is distance from the subsolar latitude in [0, 1], already
+/// season-shifted and jittered by the caller.
+fn lat_band_factor(eff_lat: f64) -> f64 {
     // Piecewise linear through calibrated breakpoints:
     //   equator: 1.0 (ITCZ)
     //   ~30°:    0.2 (subtropical desert)
@@ -324,14 +369,11 @@ fn lat_band_factor(abs_lat: f64, season_offset: f64) -> f64 {
         (0.78, 0.30),
         (1.00, 0.10),
     ];
-    // Shift abs_lat in the opposite direction: if ITCZ moves north (+offset),
-    // a given cell effectively sits at a lower latitude relative to the band.
-    let shifted = (abs_lat - season_offset).clamp(0.0, 1.0);
     for i in 0..stops.len() - 1 {
         let (ta, va) = stops[i];
         let (tb, vb) = stops[i + 1];
-        if shifted <= tb {
-            let t = (shifted - ta) / (tb - ta);
+        if eff_lat <= tb {
+            let t = (eff_lat - ta) / (tb - ta);
             return va + (vb - va) * t;
         }
     }
@@ -340,8 +382,10 @@ fn lat_band_factor(abs_lat: f64, season_offset: f64) -> f64 {
 
 /// Fraction of moisture contributed by the westerly sweep vs easterly sweep.
 /// 1.0 = pure westerlies, 0.0 = pure easterlies.
-/// `season_offset` shifts the wind belt latitudes with the season.
-fn westerly_weight(abs_lat: f64, season_offset: f64) -> f64 {
+///
+/// `eff_lat` is distance from the subsolar latitude in [0, 1], same as
+/// `lat_band_factor`.
+fn westerly_weight(eff_lat: f64) -> f64 {
     // Westerlies dominate in mid-latitudes (~35–65°, abs_lat ~0.4–0.72).
     // Easterlies dominate in tropics and polar regions.
     let stops: &[(f64, f64)] = &[
@@ -353,12 +397,11 @@ fn westerly_weight(abs_lat: f64, season_offset: f64) -> f64 {
         (0.78, 0.10),
         (1.00, 0.00),
     ];
-    let shifted = (abs_lat - season_offset).clamp(0.0, 1.0);
     for i in 0..stops.len() - 1 {
         let (ta, va) = stops[i];
         let (tb, vb) = stops[i + 1];
-        if shifted <= tb {
-            let t = (shifted - ta) / (tb - ta);
+        if eff_lat <= tb {
+            let t = (eff_lat - ta) / (tb - ta);
             return va + (vb - va) * t;
         }
     }
@@ -534,4 +577,102 @@ pub fn generate_sea_ice(temperature: &HeatMap, is_ocean: &[bool], threshold: f64
     (0..temperature.data.len())
         .map(|i| is_ocean[i] && temperature.data[i] < threshold)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::PlanetGenParams;
+
+    const W: usize = 64;
+    const H: usize = 64;
+
+    fn flat_field(value: f64) -> HeatMap {
+        HeatMap { width: W, height: H, data: vec![value; W * H] }
+    }
+
+    /// Mean temperature of a row, averaging out the longitude jitter.
+    fn row_mean(t: &HeatMap, y: usize) -> f64 {
+        (0..W).map(|x| t.data[y * W + x]).sum::<f64>() / W as f64
+    }
+
+    /// Regression: `season_offset` was applied to unsigned latitude, so both
+    /// hemispheres shifted the same direction — the world had a global summer
+    /// and a global winter instead of opposed hemispheres. High y is north.
+    #[test]
+    fn seasons_are_hemisphere_opposed() {
+        let params = PlanetGenParams::earth_like();
+        let elev = flat_field(params.sea_level);
+        // Mirrored mid-latitude rows: equal distance from the equator.
+        let (north, south) = (H * 3 / 4, H / 4);
+
+        // Require a substantial margin, not just a direction. Under the old
+        // `abs_lat` form these rows were identical up to jitter, so a bare
+        // inequality would have been a coin flip rather than a failure. At
+        // ±0.5 normalized latitude against a 0.261 subsolar excursion the
+        // real gap is ~0.56.
+        const MARGIN: f64 = 0.3;
+
+        let summer_n = generate_temperature(&elev, &params, 0.0, 1);
+        assert!(
+            row_mean(&summer_n, north) > row_mean(&summer_n, south) + MARGIN,
+            "at phase 0 (northern summer) the northern row should be much warmer: \
+             north {}, south {}",
+            row_mean(&summer_n, north),
+            row_mean(&summer_n, south)
+        );
+
+        let summer_s = generate_temperature(&elev, &params, 0.5, 1);
+        assert!(
+            row_mean(&summer_s, south) > row_mean(&summer_s, north) + MARGIN,
+            "at phase 0.5 (southern summer) the southern row should be much warmer: \
+             north {}, south {}",
+            row_mean(&summer_s, north),
+            row_mean(&summer_s, south)
+        );
+    }
+
+    /// The equinox should be very nearly symmetric between hemispheres.
+    #[test]
+    fn equinox_is_hemisphere_symmetric() {
+        let params = PlanetGenParams::earth_like();
+        let elev = flat_field(params.sea_level);
+        let t = generate_temperature(&elev, &params, 0.25, 1);
+        let diff = (row_mean(&t, H * 3 / 4) - row_mean(&t, H / 4)).abs();
+        // Nonzero only because the band jitter decorrelates the hemispheres.
+        assert!(diff < 0.05, "equinox hemispheres should be near-symmetric, diff {diff}");
+    }
+
+    /// Regression: the lapse rate read raw elevation, so ocean cells were
+    /// cooled in proportion to their own depth and a deep trench read warmer
+    /// than a shallow shelf. Below sea level, depth must not affect temperature.
+    #[test]
+    fn ocean_depth_does_not_affect_temperature() {
+        let params = PlanetGenParams::earth_like();
+        let y = H / 3;
+
+        let shelf = generate_temperature(&flat_field(params.sea_level - 0.02), &params, 0.25, 1);
+        let trench = generate_temperature(&flat_field(0.01), &params, 0.25, 1);
+
+        let (a, b) = (row_mean(&shelf, y), row_mean(&trench, y));
+        assert!((a - b).abs() < 1e-9, "ocean depth changed temperature: shelf {a}, trench {b}");
+    }
+
+    /// Above sea level, elevation still cools — the lapse rate should not have
+    /// been neutered, only re-referenced.
+    #[test]
+    fn altitude_still_cools_land() {
+        let params = PlanetGenParams::earth_like();
+        let y = H / 3;
+
+        let lowland = generate_temperature(&flat_field(params.sea_level), &params, 0.25, 1);
+        let highland = generate_temperature(&flat_field(1.0), &params, 0.25, 1);
+
+        assert!(
+            row_mean(&lowland, y) > row_mean(&highland, y) + 0.1,
+            "high terrain should be markedly colder: lowland {}, highland {}",
+            row_mean(&lowland, y),
+            row_mean(&highland, y)
+        );
+    }
 }

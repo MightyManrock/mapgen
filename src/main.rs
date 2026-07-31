@@ -16,19 +16,32 @@ const SEED: u32 = 42;
 const WIDTH: usize = 1024;
 const HEIGHT: usize = 512;
 
+/// Fraction of the year. Equinox, so the hemispheres are symmetric: now that
+/// seasons are genuinely opposed, a solstice default would render one pole
+/// heavily glaciated and the other bare. Solstice variants (0.0 / 0.5) stay
+/// available for the planned seasonal layers.
+const SEASON_PHASE: f64 = 0.25;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all("output")?;
     let params = PlanetGenParams::earth_like();
 
-    let mut elev = elevation::generate_elevation(WIDTH, HEIGHT, SEED, params.warp_strength);
+    let mut elev = elevation::generate_elevation(
+        WIDTH,
+        HEIGHT,
+        SEED,
+        params.warp_strength,
+        params.target_land_fraction,
+    );
     elev.roughen_coastline(params.sea_level, SEED.wrapping_add(10));
     let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, params.sea_level);
 
-    let base_temperature = climate::generate_temperature(&elev, &params, 0.0, SEED);
+    let base_temperature = climate::generate_temperature(&elev, &params, SEASON_PHASE, SEED);
     let temperature = climate::apply_ocean_currents(&base_temperature, &is_ocean, &params);
     let is_sea_ice = climate::generate_sea_ice(&temperature, &is_ocean, params.sea_ice_temp_threshold);
-    let precipitation =
-        climate::generate_precipitation(&elev, &is_ocean, &temperature, &is_sea_ice, &params, 0.0, SEED);
+    let precipitation = climate::generate_precipitation(
+        &elev, &is_ocean, &temperature, &is_sea_ice, &params, SEASON_PHASE, SEED,
+    );
     let is_glacier = climate::generate_glacier(&temperature, &is_ocean, params.glacier_temp_threshold);
 
     // Hydrology consumes the base precipitation; large lakes in its output

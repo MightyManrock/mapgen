@@ -3,6 +3,17 @@
 /// region-detection generality — Earth-like/human is the only target.
 pub struct PlanetGenParams {
     pub warp_strength: f64,
+    /// Fraction of the planet's surface *area* (cos-lat weighted, not cell
+    /// count) to place above sea level. `None` disables the solve and uses
+    /// `sea_level` literally, preserving pre-normalization behavior.
+    ///
+    /// A target, not a guarantee: `roughen_coastline` and `flood_fill_ocean`
+    /// run afterward and push the realized figure up by 0.1–1.9 points.
+    pub target_land_fraction: Option<f64>,
+    /// DERIVED, not an input, whenever `target_land_fraction` is `Some` —
+    /// `generate_elevation` normalizes the field about the solved sea level,
+    /// so this must then be 0.5. Only meaningful as an input when the target
+    /// is `None`.
     pub sea_level: f64,
     pub axial_tilt: f64,
     pub temp_baseline: f64,
@@ -56,22 +67,38 @@ impl PlanetGenParams {
     pub fn earth_like() -> Self {
         Self {
             warp_strength: 0.2,
-            sea_level: 0.525,
+            target_land_fraction: Some(0.30),
+            // Derived: overwritten to 0.5 by the normalization above.
+            sea_level: 0.5,
             axial_tilt: 23.5,
             temp_baseline: 1.0,
             temp_gradient: 1.0,
-            lapse_factor: 0.3,
+            // Calibrated against the *above-sea-level* lapse reference, which
+            // averages ~0.24 over land where the old raw-elevation reference
+            // averaged ~0.7. 0.3 under the new reference leaves the world far
+            // too warm (mean land T 0.80 vs 0.68 baseline, glaciers all but
+            // gone); 0.70 holds temperature within noise of the old behavior.
+            lapse_factor: 0.7,
             sea_ice_evap_factor: 0.25,
             precip_moisture: 1.0,
             land_decay: 0.985,
-            slope_threshold: 0.015,
+            // Scaled by the 1.539x land-relief factor from normalization, to
+            // preserve prior behavior under the new fixed scale. NOTE this
+            // keeps the rain shadow inert: post-normalization p95 per-cell
+            // land gradient is ~0.011, still below this. Deliberate — this
+            // change must not alter orographic behavior. Activating the rain
+            // shadow wants ~0.004-0.006 plus a windward gain term.
+            slope_threshold: 0.023,
             slope_loss: 0.5,
             base_arid: 0.05,
             et_factor: 0.35,
             rotation_period: 1.0,
             glacier_temp_threshold: 0.20,
             sea_ice_temp_threshold: 0.14,
-            max_lake_fill: 0.04,
+            // Also scaled by 1.539x — it is an absolute fill depth in
+            // elevation units, used both as the lake-vs-endorheic cutoff and
+            // to normalize lake depth for the hydrology encoding.
+            max_lake_fill: 0.062,
             river_threshold: 400.0,
             aquifer_probability: 0.35,
             glacier_melt_factor: 2.5,
