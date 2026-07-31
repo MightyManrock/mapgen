@@ -42,6 +42,37 @@ fn no_recycling() -> PlanetGenParams {
     p
 }
 
+/// Proposed thresholds, derived from annual rainfall at 1.0 == 3000 mm/yr.
+///   desert       <250mm  -> 0.083
+///   steppe    250-500mm  -> 0.167
+///   savanna  500-1000mm  -> 0.333
+///   forest top   2000mm  -> 0.667
+///   boreal        300mm  -> 0.100
+///   tundra        200mm  -> 0.067
+fn classify_new(temp: f64, precip: f64) -> usize {
+    if temp < 0.20 {
+        return if precip < 0.067 { 0 } else { 4 };
+    }
+    if temp < 0.35 {
+        return if precip < 0.100 { 0 } else { 2 };
+    }
+    if temp < 0.55 {
+        if precip < 0.083 { return 0; }
+        if precip < 0.167 { return 1; }
+        if precip < 0.667 { return 2; }
+        return 3;
+    }
+    if temp < 0.70 {
+        if precip < 0.083 { return 0; }
+        if precip < 0.300 { return 1; }
+        return 2;
+    }
+    if precip < 0.083 { return 0; }
+    if precip < 0.333 { return 1; }
+    if precip < 0.667 { return 2; }
+    3
+}
+
 /// Same thresholds as `Region::character()` in regions.rs.
 fn classify(temp: f64, precip: f64) -> usize {
     if temp < 0.20 {
@@ -82,6 +113,8 @@ fn main() {
         let mut sub_area = 0.0;
         let mut sub_desert = 0.0;
         let mut land_precip: Vec<f64> = Vec::new();
+        let mut mix_new = [0.0f64; 5];
+        let mut sub_desert_new = 0.0;
 
         for seed in SEEDS {
             let mut elev = elevation::generate_elevation(
@@ -105,6 +138,7 @@ fn main() {
                     }
                     let c = classify(t.data[i], precip.data[i]);
                     mix[c] += w;
+                    mix_new[classify_new(t.data[i], precip.data[i])] += w;
                     land_area += w;
                     precip_sum += precip.data[i] * w;
                     land_precip.push(precip.data[i]);
@@ -113,6 +147,9 @@ fn main() {
                         sub_precip += precip.data[i] * w;
                         if c == 0 {
                             sub_desert += w;
+                        }
+                        if classify_new(t.data[i], precip.data[i]) == 0 {
+                            sub_desert_new += w;
                         }
                     }
                 }
@@ -131,6 +168,11 @@ fn main() {
         // render reads desert regardless of how the cells classify.
         land_precip.sort_by(|a, b| a.total_cmp(b));
         let q = |f: f64| land_precip[((land_precip.len() - 1) as f64 * f) as usize];
+        print!("  biome mix (RECALIBRATED)  :");
+        for c in 0..5 {
+            print!("  {} {:.1}%", NAMES[c], mix_new[c] / land_area * 100.0);
+        }
+        println!();
         println!(
             "  land precip percentiles : p10 {:.3}  p50 {:.3}  p90 {:.3}  p99 {:.3}",
             q(0.10), q(0.50), q(0.90), q(0.99)
@@ -141,6 +183,10 @@ fn main() {
             SUBTROPICS.1,
             sub_precip / sub_area,
             sub_desert / sub_area * 100.0
+        );
+        println!(
+            "  subtropical belt, RECALIBRATED: {:.1}% classified desert",
+            sub_desert_new / sub_area * 100.0
         );
     }
 }
