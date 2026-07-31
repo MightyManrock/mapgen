@@ -71,16 +71,27 @@ fn temperature_color(t: f64) -> [u8; 3] {
 }
 
 /// Precipitation gradient: tan (arid) → pale green → green → dark green → blue (extremely wet).
+/// Precipitation is *sequential* data (how much), so the ramp must fall
+/// monotonically in perceptual lightness — otherwise a brightness bump reads as
+/// a feature in the map that isn't in the field. The previous stops peaked at
+/// t=0.20 (OKLab L 0.803, brighter than the t=0.00 tan at 0.784), which painted
+/// a spurious pale stripe wherever precipitation crossed 0.20 — at ~32° and
+/// ~66° in both hemispheres, four bands on the map. The underlying field is
+/// smooth there; only the ramp was wrong.
+///
+/// Hue still carries biome meaning (sand -> grass -> forest -> deep water)
+/// rather than the single-hue ramp a chart would use, but lightness now
+/// decreases at every step: L 0.880, 0.821, 0.723, 0.589, 0.464, 0.354.
 fn precipitation_color(t: f64) -> [u8; 3] {
     sample_gradient(
         t,
         &[
-            ([210, 180, 130], 0.00), // hyperarid
-            ([180, 200, 140], 0.20), // semi-arid
-            ([100, 180, 100], 0.40), // moderate
-            ([40, 130, 60], 0.60),   // wet
-            ([20, 90, 130], 0.80),   // very wet
-            ([10, 50, 180], 1.00),   // monsoon / extremely wet
+            ([232, 214, 170], 0.00), // hyperarid
+            ([198, 202, 141], 0.20), // semi-arid
+            ([140, 180, 108], 0.40), // moderate
+            ([74, 143, 84], 0.60),   // wet
+            ([30, 100, 108], 0.80),  // very wet
+            ([18, 55, 122], 1.00),   // monsoon / extremely wet
         ],
     )
 }
@@ -113,17 +124,44 @@ fn glacier_color(t: f64, threshold: f64) -> [u8; 3] {
     )
 }
 
-/// Effective moisture gradient: orange-tan (arid) → pale green → teal (humid).
+/// Effective moisture gradient: pale sand (arid) → green → teal (humid).
+///
+/// Sequential, so monotonically darkening — see `precipitation_color`. The old
+/// stops were worse than precipitation's: they *rose* 0.718 → 0.834 from t=0.00
+/// to 0.20 and then sat flat (0.8337 → 0.8339) through t=0.40, a dead zone
+/// where the ramp carried no lightness information at all. Steps are now nearly
+/// uniform: L 0.874, 0.796, 0.697, 0.599, 0.499, 0.410.
 fn aridity_color(t: f64) -> [u8; 3] {
     sample_gradient(
         t,
         &[
-            ([210, 150, 80], 0.00),  // hyperarid
-            ([220, 200, 130], 0.20), // arid
-            ([190, 210, 150], 0.40), // semi-arid
-            ([100, 175, 130], 0.60), // moderate
-            ([50, 140, 120], 0.80),  // humid
-            ([20, 90, 110], 1.00),   // very humid
+            ([236, 210, 160], 0.00), // hyperarid
+            ([196, 192, 130], 0.20), // arid
+            ([146, 168, 95], 0.40),  // semi-arid
+            ([84, 142, 114], 0.60),  // moderate
+            ([54, 110, 106], 0.80),  // humid
+            ([24, 82, 100], 1.00),   // very humid
+        ],
+    )
+}
+
+/// Diurnal swing magnitude: pale (maritime, steady) → deep rust (continental,
+/// extreme day/night gap).
+///
+/// Its own sequential ramp rather than `temperature_color`, which is diverging
+/// (cold blue → pale → hot red) and so peaks in lightness at its middle. That
+/// shape is right for temperature, where the midpoint is a meaningful neutral,
+/// but wrong for swing magnitude, where zero is one end of the scale — reusing
+/// it painted a bright band through mid-range swing values.
+fn diurnal_swing_color(t: f64) -> [u8; 3] {
+    sample_gradient(
+        t,
+        &[
+            ([240, 234, 206], 0.00), // negligible swing
+            ([238, 206, 140], 0.25),
+            ([228, 160, 84], 0.50),
+            ([196, 106, 52], 0.75),
+            ([132, 48, 38], 1.00), // extreme swing
         ],
     )
 }
@@ -256,7 +294,7 @@ pub fn save_diurnal_swing(diurnal_swing: &HeatMap, path: &str) -> Result<(), ima
     let img = ImageBuffer::from_fn(width, height, |x, y| {
         let i = y as usize * diurnal_swing.width + x as usize;
         let gap_c = diurnal_swing.data[i] * 70.0;
-        Rgb(temperature_color((gap_c / 40.0).clamp(0.0, 1.0)))
+        Rgb(diurnal_swing_color((gap_c / 40.0).clamp(0.0, 1.0)))
     });
     img.save(path)
 }
@@ -334,13 +372,15 @@ pub fn save_ocean_currents(
     params: &PlanetGenParams,
     path: &str,
 ) -> Result<(), image::ImageError> {
+    // The same smoothed field `apply_ocean_currents` consumes, so the debug
+    // layer cannot disagree with the climate it is supposed to explain.
+    let bias_field = crate::climate::current_bias_field(width, height, is_ocean, params);
     let img = ImageBuffer::from_fn(width as u32, height as u32, |x, y| {
         let xi = x as usize;
         let yi = y as usize;
         let idx = yi * width + xi;
         let abs_lat = (yi as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-        let raw = crate::climate::current_bias_raw(xi, yi, width, is_ocean, params);
-        let signed = raw * crate::climate::current_lat_envelope(abs_lat);
+        let signed = bias_field[idx] * crate::climate::current_lat_envelope(abs_lat);
         let base: [u8; 3] = if is_ocean[idx] { [40, 40, 60] } else { [70, 65, 55] };
         let intensity = (signed.abs() * 255.0).clamp(0.0, 255.0) as u8;
         let color = if signed > 0.0 {

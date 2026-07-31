@@ -182,3 +182,37 @@ Visual/manual, consistent with the rest of the project:
    be somewhat suppressed near warm (east) coasts and somewhat expanded
    near cool (west) coasts at matching high latitudes, if any coastline
    at those latitudes exists on this seed's planet.
+
+---
+
+## Amendment (2026-07-31): meridional smoothing
+
+The per-row coastline search specified above has no north-south coupling.
+A small island casts a `current_search_dist`-wide bias strip along its own
+row and nothing on the row above, and the nearest-coast *direction* can
+flip between adjacent rows, reversing the bias sign. Measured on seed 42:
+row-to-row differences averaged 2.6x the along-row ones, with 544 vertical
+sign flips and a peak jump of 0.195 normalized temperature (~13.7 C) across
+a single row boundary — hard horizontal streaks across open ocean.
+
+This was always present but was camouflaged by a separate bug: the lapse
+rate read raw elevation, giving the ocean a depth-driven temperature
+texture (std dev 2.5 C, range 11 C). Fixing that lapse bug (see
+`2026-07-31-target-land-fraction-design.md`) left the ocean smooth and
+exposed the streaking.
+
+`current_bias_field` now computes the raw per-cell bias as specified, then
+applies a triangular blur (two box passes) down each column, radius
+`current_smooth_rows` (default 4, 0 disables). Vertical-only by design: the
+east/west asymmetry along a row *is* the feature, so blurring horizontally
+would erode the signal rather than the artifact. Two passes rather than one
+because a single box blur trades the one-row streak for a weaker step at
+its window edge.
+
+`render::save_ocean_currents` consumes the same smoothed field, so the
+debug layer cannot disagree with the climate it explains.
+
+Regression tests in `climate.rs`: `current_bias_is_meridionally_coherent`
+(row-to-row variation comparable to along-row; measures 36x unsmoothed) and
+`current_bias_keeps_east_west_asymmetry` (opposite-signed bias either side
+of a coast, i.e. smoothing did not flatten the feature).

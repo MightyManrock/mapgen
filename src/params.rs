@@ -43,6 +43,10 @@ pub struct PlanetGenParams {
     pub current_temp_bias: f64,
     pub current_search_dist: usize,
     pub current_bleed_dist: usize,
+    /// Radius, in rows, of the meridional box blur over the current-bias field.
+    /// The bias is derived from a per-row coastline search with no north-south
+    /// coupling, which streaks; this supplies it. 0 disables smoothing.
+    pub current_smooth_rows: usize,
     // Freshwater greening (render-only vegetation shift, not a climate change)
     pub greening_radius: usize,
     pub greening_aquifer_strength: f64,
@@ -112,6 +116,7 @@ impl PlanetGenParams {
             current_temp_bias: 0.10,
             current_search_dist: 40,
             current_bleed_dist: 8,
+            current_smooth_rows: 4,
             greening_radius: 6,
             greening_aquifer_strength: 0.4,
             greening_ocean_damp_dist: 5,

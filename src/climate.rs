@@ -156,10 +156,11 @@ fn ocean_cell_bias(x: usize, y: usize, width: usize, is_ocean: &[bool], search_d
 /// sign, scaled down by linear falloff over `params.current_bleed_dist`)
 /// — this bleeds "whatever the adjacent water's temperature signature
 /// is" onto the coast, rather than re-deriving a sign from the land
-/// cell's own perspective. `pub(crate)` so `render::save_ocean_currents`
-/// can reuse it for the debug visualization without duplicating this
-/// logic.
-pub(crate) fn current_bias_raw(x: usize, y: usize, width: usize, is_ocean: &[bool], params: &PlanetGenParams) -> f64 {
+/// cell's own perspective.
+///
+/// Private: consumers want `current_bias_field`, which smooths this. Using the
+/// raw per-cell value directly is what produced the row-streaking artifact.
+fn current_bias_raw(x: usize, y: usize, width: usize, is_ocean: &[bool], params: &PlanetGenParams) -> f64 {
     let idx = y * width + x;
     if is_ocean[idx] {
         return ocean_cell_bias(x, y, width, is_ocean, params.current_search_dist);
@@ -222,6 +223,61 @@ pub(crate) fn current_lat_envelope(abs_lat: f64) -> f64 {
     stops.last().unwrap().1
 }
 
+/// The raw bias field for every cell, smoothed meridionally.
+///
+/// `current_bias_raw` searches only along a cell's own row, so nothing couples
+/// vertically adjacent cells: a small island casts a `current_search_dist`-wide
+/// bias strip along its own row and nothing at all on the row above it, and the
+/// nearest-coast *direction* can flip between adjacent rows, reversing the sign.
+/// Measured on seed 42 that left row-to-row differences averaging 2.6x the
+/// along-row ones, 544 vertical sign flips, and a peak jump of 0.195 normalized
+/// temperature (~13.7 C) across a single row boundary — visible as hard
+/// horizontal streaks across open ocean.
+///
+/// A box blur down each column supplies the missing meridional coherence. It is
+/// deliberately vertical-only: the east/west asymmetry along a row *is* the
+/// feature (warm western-boundary currents on east coasts, cool eastern-boundary
+/// currents on west coasts), so blurring horizontally would erode the signal
+/// rather than the artifact. Rows clamp at the poles, matching `HeatMap`'s
+/// convention that y does not wrap.
+///
+/// `pub(crate)` so `render::save_ocean_currents` visualizes the same field the
+/// climate actually uses.
+pub(crate) fn current_bias_field(
+    width: usize,
+    height: usize,
+    is_ocean: &[bool],
+    params: &PlanetGenParams,
+) -> Vec<f64> {
+    let raw: Vec<f64> = (0..width * height)
+        .map(|idx| current_bias_raw(idx % width, idx / width, width, is_ocean, params))
+        .collect();
+
+    let r = params.current_smooth_rows;
+    if r == 0 {
+        return raw;
+    }
+
+    // Two box passes, i.e. a triangular kernel. A single box blur has a hard
+    // window edge, which trades the one-row streak for a weaker step at ±r;
+    // the second pass tapers the weights and removes it, for one extra cheap
+    // sweep. Rows clamp at the poles — y does not wrap.
+    let blur = |src: &[f64]| -> Vec<f64> {
+        let mut out = vec![0.0; width * height];
+        for y in 0..height {
+            let lo = y.saturating_sub(r);
+            let hi = (y + r).min(height - 1);
+            let n = (hi - lo + 1) as f64;
+            for x in 0..width {
+                let sum: f64 = (lo..=hi).map(|yy| src[yy * width + x]).sum();
+                out[y * width + x] = sum / n;
+            }
+        }
+        out
+    };
+    blur(&blur(&raw))
+}
+
 /// Applies the coastline-relative current bias to a base temperature
 /// field. Returns a new field (does not mutate the input), same pattern
 /// as `generate_aridity` taking existing fields and producing a derived
@@ -229,13 +285,12 @@ pub(crate) fn current_lat_envelope(abs_lat: f64) -> f64 {
 pub fn apply_ocean_currents(temperature: &HeatMap, is_ocean: &[bool], params: &PlanetGenParams) -> HeatMap {
     let width = temperature.width;
     let height = temperature.height;
+    let bias_field = current_bias_field(width, height, is_ocean, params);
     let data = (0..width * height)
         .map(|idx| {
-            let x = idx % width;
             let y = idx / width;
             let abs_lat = (y as f64 - height as f64 / 2.0).abs() / (height as f64 / 2.0);
-            let raw = current_bias_raw(x, y, width, is_ocean, params);
-            let bias = raw * current_lat_envelope(abs_lat) * params.current_temp_bias;
+            let bias = bias_field[idx] * current_lat_envelope(abs_lat) * params.current_temp_bias;
             (temperature.data[idx] + bias).clamp(0.0, 1.0)
         })
         .collect();
@@ -656,6 +711,86 @@ mod tests {
 
         let (a, b) = (row_mean(&shelf, y), row_mean(&trench, y));
         assert!((a - b).abs() < 1e-9, "ocean depth changed temperature: shelf {a}, trench {b}");
+    }
+
+    /// Regression: the current bias came from a per-row coastline search with
+    /// no north-south coupling, so vertically adjacent ocean cells could differ
+    /// wildly — including full sign reversals — painting hard horizontal streaks
+    /// across open ocean. Smoothing must leave row-to-row variation no worse
+    /// than along-row variation.
+    #[test]
+    fn current_bias_is_meridionally_coherent() {
+        let params = PlanetGenParams::earth_like();
+        // A single-cell island: under the raw field it casts a bias strip
+        // `current_search_dist` wide along its own row and nothing on the rows
+        // above or below, which is the pathological case.
+        let mut is_ocean = vec![true; W * H];
+        for (y, x) in [(H / 4, W / 4), (H / 2, W / 2), (3 * H / 4, 3 * W / 4)] {
+            is_ocean[y * W + x] = false;
+        }
+
+        // Compare *mean* neighbor differences, not max: an island produces one
+        // legitimately sharp along-row transition at its own coast, which would
+        // dominate a max-based comparison and hide the row-to-row incoherence
+        // out in open water. Means are what surfaced the artifact originally
+        // (2.6x vertical/horizontal on seed 42).
+        let field = current_bias_field(W, H, &is_ocean, &params);
+        let (mut v_sum, mut h_sum, mut n) = (0.0, 0.0, 0.0);
+        for y in 0..H - 1 {
+            for x in 0..W {
+                let i = y * W + x;
+                if !is_ocean[i] {
+                    continue;
+                }
+                v_sum += (field[i] - field[(y + 1) * W + x]).abs();
+                h_sum += (field[i] - field[y * W + (x + 1) % W]).abs();
+                n += 1.0;
+            }
+        }
+        let (mean_v, mean_h) = (v_sum / n, h_sum / n);
+
+        // Unsmoothed, this configuration measures mean_v 0.056 against mean_h
+        // 0.0015 — a 36x ratio, the artifact. Parity is not achievable here:
+        // the sources are three isolated rows, so any finite kernel leaves more
+        // structure vertically than along a row where bias falls off smoothly
+        // with distance. What must hold is that the ratio is no longer extreme.
+        assert!(
+            mean_v < mean_h * 3.0,
+            "row-to-row variation ({mean_v:.5}) should be comparable to along-row \
+             ({mean_h:.5}), ratio {:.1}x",
+            mean_v / mean_h
+        );
+        assert!(
+            mean_v < 0.01,
+            "row-to-row variation {mean_v:.5} is near the unsmoothed 0.056 — \
+             smoothing is not being applied"
+        );
+    }
+
+    /// Smoothing must not flatten the east/west asymmetry, which is the entire
+    /// point of the feature — a coast should still read warm on one side and
+    /// cool on the other.
+    #[test]
+    fn current_bias_keeps_east_west_asymmetry() {
+        let params = PlanetGenParams::earth_like();
+        // A tall landmass spanning many rows, so smoothing has like values to
+        // average and the coastal signal survives.
+        let mut is_ocean = vec![true; W * H];
+        for y in 0..H {
+            for x in (W / 2)..(W / 2 + 4) {
+                is_ocean[y * W + x] = false;
+            }
+        }
+
+        let field = current_bias_field(W, H, &is_ocean, &params);
+        let y = H / 2;
+        let west = field[y * W + W / 2 - 2]; // ocean just west of the landmass
+        let east = field[y * W + W / 2 + 6]; // ocean just east of it
+
+        assert!(
+            west < 0.0 && east > 0.0,
+            "expected opposite-signed bias either side of the coast: west {west}, east {east}"
+        );
     }
 
     /// Above sea level, elevation still cools — the lapse rate should not have
