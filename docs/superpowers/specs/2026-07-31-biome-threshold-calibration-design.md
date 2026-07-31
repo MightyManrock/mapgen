@@ -1,5 +1,29 @@
 # mapgen: calibrate biome thresholds against an explicit rainfall scale
 
+> **STATUS: DEFERRED — do not implement as written.**
+>
+> This spec compares the generated biome mix against Earth's. That comparison
+> is invalid while the generated geology is not Earth-like. Measured across 8
+> seeds, **18% of land sits further from the ocean than Earth's most
+> continental point** (2,645 km, Xinjiang, which is desert); p90 is 3,362 km
+> and the maximum is 6,439 km, 2.4x Earth's extreme.
+>
+> A desert-heavy biome mix is therefore the *correct* climate for the
+> continents currently being generated, not a calibration error. Recalibrating
+> thresholds now would tune against a geology that is about to change — and
+> would make the map look right while the landmasses stayed wrong.
+>
+> Revisit **after** continent fragmentation and the rain shadow land, and
+> re-derive the numbers then.
+>
+> Two findings here stand independently of geology and survive the deferral:
+>
+> 1. **`lat_band_factor` is correctly shaped** — measured, not assumed. It is
+>    not a suspect and should not be reshaped (see the refutation below).
+> 2. **Tundra is structurally impossible**: polar ceiling 0.053–0.097 against
+>    a 0.20 threshold. That is arithmetic, and no landmass configuration
+>    reaches it. Worth fixing whenever the classifier is next touched.
+
 ## Context
 
 Half of all land classified as desert (50.2%) while temperate forest sat at
