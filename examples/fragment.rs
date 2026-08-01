@@ -1,10 +1,12 @@
-// Prototype: how do continent feature frequency and domain-warp strength
-// affect continentality?
+// Measurement harness: how continent scale affects continentality.
 //
-// The target is set by measurement, not taste: 18% of currently-generated land
-// sits further from the ocean than Earth's most continental point (2,645 km).
-// On Earth that figure is 0%. Bring it down without simply shredding the
-// continents into islands.
+// The target is set by measurement, not taste. Earth's most continental point
+// (the Eurasian pole of inaccessibility, 2,645 km inland) is desert; no land on
+// Earth lies beyond it. Land further inland than that is more continental than
+// anywhere real, and will generate as desert for correct reasons.
+//
+//   cargo run --release --example fragment           # sweep the range
+//   cargo run --release --example fragment render    # write candidate terrains
 #[path = "../src/heatmap.rs"]
 mod heatmap;
 #[path = "../src/elevation.rs"]
@@ -14,7 +16,6 @@ mod params;
 
 use std::collections::VecDeque;
 
-use noise::{Fbm, NoiseFn, Perlin};
 use params::PlanetGenParams;
 
 const WIDTH: usize = 1024;
@@ -26,61 +27,35 @@ fn cos_lat(y: usize) -> f64 {
     ((y as f64 / HEIGHT as f64 - 0.5) * std::f64::consts::PI).cos()
 }
 
-/// `generate_elevation` with the two hardcoded constants exposed.
-fn gen_elev(seed: u32, wavelengths: f64, warp: f64, target: Option<f64>) -> heatmap::HeatMap {
-    let fbm = Fbm::<Perlin>::new(seed);
-    let warp_a = Fbm::<Perlin>::new(seed.wrapping_add(1));
-    let warp_b = Fbm::<Perlin>::new(seed.wrapping_add(2));
-    let warp_c = Fbm::<Perlin>::new(seed.wrapping_add(3));
-    let r = wavelengths / std::f64::consts::TAU;
-
-    let mut data = Vec::with_capacity(WIDTH * HEIGHT);
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let lon = x as f64 / WIDTH as f64 * std::f64::consts::TAU;
-            let lat = (y as f64 / HEIGHT as f64 - 0.5) * std::f64::consts::PI;
-            let cl = lat.cos();
-            let (sx, sy, sz) = (r * cl * lon.cos(), r * cl * lon.sin(), r * lat.sin());
-            let dx = warp_a.get([sx, sy, sz]) * warp;
-            let dy = warp_b.get([sx + 5.2, sy + 1.3, sz + 3.7]) * warp;
-            let dz = warp_c.get([sx + 2.8, sy + 4.6, sz + 1.9]) * warp;
-            data.push(fbm.get([sx + dx, sy + dy, sz + dz]));
-        }
-    }
-    let min = data.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    for v in &mut data {
-        *v = (*v - min) / (max - min);
-    }
-    let mut hm = heatmap::HeatMap { width: WIDTH, height: HEIGHT, data };
-    hm.smooth_low_variance(6, 0.002, 0.25);
-    if let Some(t) = target {
-        let sl = elevation::weighted_sea_level(&hm.data, WIDTH, HEIGHT, t);
-        elevation::normalize_about_sea_level(&mut hm.data, sl);
-    }
-    hm
+fn configured(wavelengths: f64, warp: f64) -> PlanetGenParams {
+    let mut p = PlanetGenParams::earth_like();
+    p.continent_wavelengths = wavelengths;
+    p.warp_strength = warp;
+    p
 }
 
 struct Metrics {
-    grad_p95: f64,
     beyond_pct: f64,
     p50: f64,
     p90: f64,
     landmasses: f64,
     largest_pct: f64,
+    grad_p95: f64,
 }
 
-fn measure(p: &PlanetGenParams, wavelengths: f64, warp: f64) -> Metrics {
+fn measure(p: &PlanetGenParams) -> Metrics {
     let km_row = std::f64::consts::PI * p.radius_km / HEIGHT as f64;
     let km_col = |y: usize| std::f64::consts::TAU * p.radius_km * cos_lat(y) / WIDTH as f64;
     let (mut all, mut masses, mut largest, mut n) = (Vec::new(), 0.0, 0.0, 0.0);
     let mut grads: Vec<f64> = Vec::new();
 
     for seed in SEEDS {
-        let mut elev = gen_elev(seed, wavelengths, warp, p.target_land_fraction);
+        let mut elev = elevation::generate_elevation(WIDTH, HEIGHT, seed, p);
         elev.roughen_coastline(p.sea_level, seed.wrapping_add(10));
         let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, p.sea_level);
 
+        // Multi-source BFS from every ocean cell, accumulating physical
+        // distance: cells are not square and shrink toward the poles.
         let mut dist = vec![f64::INFINITY; WIDTH * HEIGHT];
         let mut q = VecDeque::new();
         for i in 0..WIDTH * HEIGHT {
@@ -104,11 +79,15 @@ fn measure(p: &PlanetGenParams, wavelengths: f64, warp: f64) -> Metrics {
             for x in 0..WIDTH {
                 let i = y * WIDTH + x;
                 tot += w;
-                if !is_ocean[i] { all.push((dist[i], w)); land_area += w; }
+                if !is_ocean[i] {
+                    all.push((dist[i], w));
+                    land_area += w;
+                    let up = y * WIDTH + (x + WIDTH - 1) % WIDTH;
+                    grads.push((elev.data[i] - elev.data[up]).abs());
+                }
             }
         }
 
-        // Landmasses holding at least 0.5% of the globe, and the largest.
         let mut comp = vec![usize::MAX; WIDTH * HEIGHT];
         let mut sizes = Vec::new();
         for start in 0..WIDTH * HEIGHT {
@@ -126,16 +105,6 @@ fn measure(p: &PlanetGenParams, wavelengths: f64, warp: f64) -> Metrics {
             }
             sizes.push(area);
         }
-        // Per-cell east-west land gradient: what the rain shadow's
-        // slope_threshold (0.023) is compared against.
-        for y in 0..HEIGHT {
-            for x in 0..WIDTH {
-                let i = y * WIDTH + x;
-                if is_ocean[i] { continue; }
-                let up = y * WIDTH + (x + WIDTH - 1) % WIDTH;
-                grads.push((elev.data[i] - elev.data[up]).abs());
-            }
-        }
         sizes.sort_by(|a, b| b.total_cmp(a));
         masses += sizes.iter().filter(|&&s| s / tot > 0.005).count() as f64;
         largest += sizes[0] / land_area * 100.0;
@@ -143,6 +112,7 @@ fn measure(p: &PlanetGenParams, wavelengths: f64, warp: f64) -> Metrics {
     }
 
     all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    grads.sort_by(|a, b| a.total_cmp(b));
     let total: f64 = all.iter().map(|v| v.1).sum();
     let q_at = |f: f64| {
         let want = total * f;
@@ -150,50 +120,23 @@ fn measure(p: &PlanetGenParams, wavelengths: f64, warp: f64) -> Metrics {
         for (d, w) in &all { acc += w; if acc >= want { return *d; } }
         all.last().unwrap().0
     };
-    grads.sort_by(|a, b| a.total_cmp(b));
     Metrics {
-        grad_p95: grads[(grads.len() as f64 * 0.95) as usize],
-        beyond_pct: all.iter().filter(|(d, _)| *d > EARTH_MOST_CONTINENTAL_KM)
-            .map(|(_, w)| w).sum::<f64>() / total * 100.0,
+        beyond_pct: (all.iter().filter(|(d, _)| *d > EARTH_MOST_CONTINENTAL_KM)
+            .map(|(_, w)| w).sum::<f64>() / total * 100.0).max(0.0),
         p50: q_at(0.50),
         p90: q_at(0.90),
         landmasses: masses / n,
         largest_pct: largest / n,
+        grad_p95: grads[(grads.len() as f64 * 0.95) as usize],
     }
 }
 
-fn main() {
-    if std::env::args().any(|a| a == "render") { render_candidates(); println!("rendered"); return; }
-    let p = PlanetGenParams::earth_like();
-    println!("Target: 'beyond' near 0% (Earth), while keeping real continents.\n");
-    println!("wavelengths  warp | beyond |    p50 |    p90 | masses | largest% | p95 grad");
-    for (wl, warp) in [
-        (2.0, 0.15),
-        (2.5, 0.20),
-        (3.5, 0.20),
-        (5.5, 0.65),
-        (8.0, 0.65),
-        (11.0, 0.65),
-        (14.0, 0.70),
-        (18.0, 0.70),
-    ] {
-        let m = measure(&p, wl, warp);
-        println!(
-            "{:11.1} {:5.2} | {:5.1}% | {:6.0} | {:6.0} | {:6.1} | {:8.1} | {:8.4}{}",
-            wl, warp, m.beyond_pct, m.p50, m.p90, m.landmasses, m.largest_pct, m.grad_p95,
-            if (wl - 3.5).abs() < 1e-9 && (warp - 0.2).abs() < 1e-9 { "   <- current" } else { "" }
-        );
-    }
-}
-
-// Renders candidate configurations for visual inspection: numbers can be
-// right while the terrain reads as unnatural (strong domain warping can
-// produce a swirled look that no metric here would catch).
-#[allow(dead_code)]
+/// Writes candidate terrains for visual inspection — metrics cannot catch a
+/// terrain that simply reads as unnatural.
 fn render_candidates() {
-    let p = PlanetGenParams::earth_like();
-    for (wl, warp) in [(3.5, 0.20), (5.5, 0.50), (5.5, 0.65), (5.5, 0.80), (6.5, 0.65)] {
-        let mut elev = gen_elev(42, wl, warp, p.target_land_fraction);
+    for (wl, warp) in [(2.5, 0.20), (5.5, 0.65), (11.0, 0.65), (18.0, 0.70)] {
+        let p = configured(wl, warp);
+        let mut elev = elevation::generate_elevation(WIDTH, HEIGHT, 42, &p);
         elev.roughen_coastline(p.sea_level, 52);
         let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, p.sea_level);
         let img = image::ImageBuffer::from_fn(WIDTH as u32, HEIGHT as u32, |x, y| {
@@ -206,6 +149,34 @@ fn render_candidates() {
                 image::Rgb([(120.0 + 110.0 * h) as u8, (140.0 + 80.0 * h) as u8, (90.0 + 70.0 * h) as u8])
             }
         });
-        img.save(format!("output/cand_wl{wl}_warp{warp}.png")).unwrap();
+        img.save(format!("output/continents_wl{wl}_warp{warp}.png")).unwrap();
+    }
+}
+
+fn main() {
+    if std::env::args().any(|a| a == "render") {
+        render_candidates();
+        println!("wrote output/continents_*.png");
+        return;
+    }
+    let default = PlanetGenParams::earth_like();
+    println!("Earth: ~5 major landmasses, largest ~57% of land, 0% beyond 2,645 km.\n");
+    println!("wavelengths  warp | beyond |    p50 |    p90 | masses | largest% | p95 grad");
+    for (wl, warp) in [
+        (2.5, 0.20),
+        (3.5, 0.20),
+        (5.5, 0.65),
+        (8.0, 0.65),
+        (11.0, 0.65),
+        (18.0, 0.70),
+    ] {
+        let m = measure(&configured(wl, warp));
+        let is_default = (wl - default.continent_wavelengths).abs() < 1e-9
+            && (warp - default.warp_strength).abs() < 1e-9;
+        println!(
+            "{:11.1} {:5.2} | {:5.1}% | {:6.0} | {:6.0} | {:6.1} | {:8.1} | {:8.4}{}",
+            wl, warp, m.beyond_pct, m.p50, m.p90, m.landmasses, m.largest_pct, m.grad_p95,
+            if is_default { "   <- default" } else { "" }
+        );
     }
 }

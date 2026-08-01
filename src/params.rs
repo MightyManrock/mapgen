@@ -2,6 +2,35 @@
 /// and hydrology pipeline actually consumes. No per-species, atmosphere, or
 /// region-detection generality — Earth-like/human is the only target.
 pub struct PlanetGenParams {
+    /// How many continent-scale noise wavelengths span the equator. Lower
+    /// means fewer, larger landmasses.
+    ///
+    /// Measured across 6 seeds, paired with `warp_strength`:
+    ///
+    /// ```text
+    ///  wavelengths / warp | landmasses | largest % of land | character
+    ///           2.5 / 0.20 |        1.2 |             97.5 | Pangaea
+    ///           5.5 / 0.65 |        4.2 |             58.0 | Earth-like (default)
+    ///          11.0 / 0.65 |        9.5 |             24.6 | archipelago
+    ///          18.0 / 0.70 |       14.2 |             21.7 | island world
+    /// ```
+    ///
+    /// Earth for comparison: ~5 major landmasses, largest ~57% of land area.
+    ///
+    /// This and `warp_strength` are **not independent** — see that field.
+    pub continent_wavelengths: f64,
+    /// Strength of the domain warp applied to the elevation sampling
+    /// coordinates.
+    ///
+    /// It does **not** shrink continents, it *indents* them: at 5.5
+    /// wavelengths, raising warp 0.20 -> 0.65 increases the largest landmass
+    /// (51.7% -> 58.0% of land) while reducing how far inland the interior
+    /// gets. It buys bays and peninsulas, not fragmentation.
+    ///
+    /// It also only helps once `continent_wavelengths` is high enough: at 4.5
+    /// wavelengths, warp 0.65 still leaves 9.2% of land further from the ocean
+    /// than Earth's most continental point. Raise the wavelength count first,
+    /// then use warp for coastline character.
     pub warp_strength: f64,
     /// Fraction of the planet's surface *area* (cos-lat weighted, not cell
     /// count) to place above sea level. `None` disables the solve and uses
@@ -80,7 +109,12 @@ impl PlanetGenParams {
     /// Earth-analog defaults, adapted from demiurge-rust's `PlanetParams::earth_like()`.
     pub fn earth_like() -> Self {
         Self {
-            warp_strength: 0.2,
+            // 5.5 / 0.65 gives ~4 continents with the largest holding ~58% of
+            // land, against Earth's ~5 and ~57%. The previous 3.5 / 0.20 put
+            // 90.6% of land in a single mass, leaving 18% of it further from
+            // the ocean than anywhere on Earth.
+            continent_wavelengths: 5.5,
+            warp_strength: 0.65,
             target_land_fraction: Some(0.30),
             // Derived: overwritten to 0.5 by the normalization above.
             sea_level: 0.5,

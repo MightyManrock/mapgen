@@ -58,7 +58,7 @@ struct Row {
 
 fn run(seed: u32, p: &PlanetGenParams, phase: f64) -> Row {
     let mut elev =
-        elevation::generate_elevation(WIDTH, HEIGHT, seed, p.warp_strength, p.target_land_fraction);
+        elevation::generate_elevation(WIDTH, HEIGHT, seed, p);
     elev.roughen_coastline(p.sea_level, seed.wrapping_add(10));
     let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, p.sea_level);
 

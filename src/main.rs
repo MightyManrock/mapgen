@@ -26,13 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all("output")?;
     let params = PlanetGenParams::earth_like();
 
-    let mut elev = elevation::generate_elevation(
-        WIDTH,
-        HEIGHT,
-        SEED,
-        params.warp_strength,
-        params.target_land_fraction,
-    );
+    let mut elev = elevation::generate_elevation(WIDTH, HEIGHT, SEED, &params);
     elev.roughen_coastline(params.sea_level, SEED.wrapping_add(10));
     let is_ocean = elevation::flood_fill_ocean(&elev.data, WIDTH, HEIGHT, params.sea_level);
 

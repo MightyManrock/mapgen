@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use noise::{Fbm, NoiseFn, Perlin};
 
 use crate::heatmap::{neighbors_8, HeatMap};
+use crate::params::PlanetGenParams;
 
 /// Fraction of the field remapped below sea level, and above it. Sea level
 /// always lands at exactly `OCEAN_SPAN` after `normalize_about_sea_level`.
@@ -91,16 +92,19 @@ pub fn normalize_about_sea_level(data: &mut [f64], sea_level: f64) {
 /// 3D sphere-surface coordinates so the field is seamless in x (longitude)
 /// and y (latitude), with features naturally converging at the poles.
 ///
-/// When `target_land_fraction` is `Some`, the field is remapped so that
+/// When `params.target_land_fraction` is `Some`, the field is remapped so that
 /// fraction of the surface area sits above 0.5, and the caller must use 0.5 as
 /// sea level. When `None`, the raw min/max-normalized field is returned and the
 /// caller's own `sea_level` applies.
+///
+/// Takes the whole params struct rather than individual fields, matching
+/// `generate_temperature` and `generate_hydrology` — the argument list was
+/// already at five and continent scale would have made six.
 pub fn generate_elevation(
     width: usize,
     height: usize,
     seed: u32,
-    warp_strength: f64,
-    target_land_fraction: Option<f64>,
+    params: &PlanetGenParams,
 ) -> HeatMap {
     let fbm = Fbm::<Perlin>::new(seed);
     // Two decorrelated FBM fields warp the sample coordinates before the
@@ -111,11 +115,12 @@ pub fn generate_elevation(
     let warp_a = Fbm::<Perlin>::new(seed.wrapping_add(1));
     let warp_b = Fbm::<Perlin>::new(seed.wrapping_add(2));
     let warp_c = Fbm::<Perlin>::new(seed.wrapping_add(3));
-    // Radius so that the equatorial circumference equals 3.5 — preserves
-    // feature frequency at the equator. All three FBM fields are sampled at
-    // the 3D sphere-surface point, making the noise seamless in both x and y
-    // and causing features to converge naturally at the poles.
-    let r = 3.5 / std::f64::consts::TAU;
+    // Radius so that the equatorial circumference equals
+    // `continent_wavelengths` — preserves feature frequency at the equator,
+    // and sets continent scale (see that param). All three FBM fields are
+    // sampled at the 3D sphere-surface point, making the noise seamless in
+    // both x and y and causing features to converge naturally at the poles.
+    let r = params.continent_wavelengths / std::f64::consts::TAU;
 
     let mut data = Vec::with_capacity(width * height);
     for y in 0..height {
@@ -128,9 +133,9 @@ pub fn generate_elevation(
             let sz = r * lat.sin();
 
             // All three warp fields sampled at sphere-surface coords.
-            let dx = warp_a.get([sx, sy, sz]) * warp_strength;
-            let dy = warp_b.get([sx + 5.2, sy + 1.3, sz + 3.7]) * warp_strength;
-            let dz = warp_c.get([sx + 2.8, sy + 4.6, sz + 1.9]) * warp_strength;
+            let dx = warp_a.get([sx, sy, sz]) * params.warp_strength;
+            let dy = warp_b.get([sx + 5.2, sy + 1.3, sz + 3.7]) * params.warp_strength;
+            let dz = warp_c.get([sx + 2.8, sy + 4.6, sz + 1.9]) * params.warp_strength;
             data.push(fbm.get([sx + dx, sy + dy, sz + dz]));
         }
     }
@@ -148,7 +153,7 @@ pub fn generate_elevation(
 
     // Smoothing shifts the distribution, so the sea level must be solved from
     // the final field, not the pre-smoothing one.
-    if let Some(target) = target_land_fraction {
+    if let Some(target) = params.target_land_fraction {
         let sea_level = weighted_sea_level(&hm.data, width, height, target);
         normalize_about_sea_level(&mut hm.data, sea_level);
     }
@@ -204,6 +209,63 @@ mod tests {
             }
         }
         land / total
+    }
+
+    /// Guards against the classic threaded-but-ignored parameter: a knob that
+    /// is accepted, documented, and never reaches the sampling radius would
+    /// still compile and run, and every metric would silently stay put.
+    #[test]
+    fn continent_wavelengths_reaches_the_field() {
+        let mut pangaea = PlanetGenParams::earth_like();
+        pangaea.continent_wavelengths = 2.5;
+        let mut archipelago = PlanetGenParams::earth_like();
+        archipelago.continent_wavelengths = 11.0;
+
+        let a = generate_elevation(96, 48, 7, &pangaea);
+        let b = generate_elevation(96, 48, 7, &archipelago);
+
+        let differing = a.data.iter().zip(&b.data).filter(|(x, y)| (*x - *y).abs() > 1e-6).count();
+        assert!(
+            differing > a.data.len() / 4,
+            "continent_wavelengths barely changed the field ({differing} of {} cells)",
+            a.data.len()
+        );
+    }
+
+    #[test]
+    fn generation_is_deterministic() {
+        let params = PlanetGenParams::earth_like();
+        let a = generate_elevation(96, 48, 11, &params);
+        let b = generate_elevation(96, 48, 11, &params);
+        assert_eq!(a.data, b.data, "same seed and params must give an identical field");
+    }
+
+    /// Continent scale and land fraction must stay orthogonal: sea level is
+    /// solved *after* generation, so changing how continents are shaped must
+    /// not change how much land there is.
+    #[test]
+    fn land_fraction_is_independent_of_continent_scale() {
+        for wavelengths in [2.5, 5.5, 11.0, 18.0] {
+            let mut params = PlanetGenParams::earth_like();
+            params.continent_wavelengths = wavelengths;
+            let (w, h) = (256, 128);
+            let elev = generate_elevation(w, h, 3, &params);
+
+            let mut land = 0.0;
+            let mut total = 0.0;
+            for (i, &v) in elev.data.iter().enumerate() {
+                let weight = row_area_weight(i / w, h);
+                total += weight;
+                if v >= 0.5 {
+                    land += weight;
+                }
+            }
+            let frac = land / total;
+            assert!(
+                (frac - 0.30).abs() < 0.02,
+                "wavelengths {wavelengths} gave land fraction {frac:.3}, expected ~0.30"
+            );
+        }
     }
 
     #[test]
